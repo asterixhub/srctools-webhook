@@ -147,9 +147,9 @@ fn boolean(raw: ?[]const u8, fallback: bool) !bool {
 }
 
 /// The Bhop Pro online counter, sent to the same Discord channel as runs every
-/// minute. Set ONLINE_COUNT_ENABLED=false to turn it off.
+/// ten seconds. Set ONLINE_COUNT_ENABLED=false to turn it off.
 fn onlineIntervalMs(env: *const EnvMap) !u64 {
-    const minutes = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_MINUTES"), 1, 1, 1440);
+    const minutes = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_MINUTES"), 10, 1, 1440);
     return @as(u64, @intCast(minutes)) * 60_000;
 }
 
