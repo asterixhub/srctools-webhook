@@ -30,6 +30,7 @@ pub const Worker = struct {
     scope: ?Scope = null,
     consecutive_failures: u32 = 0,
     online_next_at: i64 = 0,
+    update_next_at: i64 = 0,
     info_arena: std.heap.ArenaAllocator,
     last_update_key: []const u8 = "",
 
@@ -66,7 +67,7 @@ pub const Worker = struct {
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
             self.reportOnlineIfDue();
-            // self.reportUpdateIfDue(); // отключено пользователем: не пишем об апдейтах в канал
+            self.reportUpdateIfDue();
             if (self.shutdown.load(.acquire)) break;
             if (self.check()) |_| {
                 self.consecutive_failures = 0;
@@ -129,6 +130,8 @@ pub const Worker = struct {
     /// startup, because the baseline key starts empty.
     fn reportUpdateIfDue(self: *Worker) void {
         if (self.shutdown.load(.acquire)) return;
+        if (util.nowMs() < self.update_next_at) return;
+        self.update_next_at = util.nowMs() + @as(i64, 25 * 60_000);
         const a = self.info_arena.allocator();
 
         const update_info = upd.fetch(self.discord.http, a) catch |err| {
