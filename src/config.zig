@@ -149,8 +149,8 @@ fn boolean(raw: ?[]const u8, fallback: bool) !bool {
 /// The Bhop Pro online counter, sent to the same Discord channel as runs every
 /// ten seconds. Set ONLINE_COUNT_ENABLED=false to turn it off.
 fn onlineIntervalMs(env: *const EnvMap) !u64 {
-    const minutes = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_MINUTES"), 10, 1, 1440);
-    return @as(u64, @intCast(minutes)) * 60_000;
+    const seconds = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_SECONDS"), 10, 1, 3600);
+    return @as(u64, @intCast(seconds)) * 1_000;
 }
 
 /// Validate a Discord webhook URL the same way config.ts does, using manual

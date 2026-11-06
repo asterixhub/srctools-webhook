@@ -60,8 +60,8 @@ pub const Worker = struct {
 
     pub fn run(self: *Worker) void {
         std.log.info(
-            "[Worker] Started; polling every {d}s; online every {d}m",
-            .{ self.config.check_interval_ms / 1000, self.config.online_interval_ms / 60_000 },
+            "[Worker] Started; polling every {d}s; online every {d}s",
+            .{ self.config.check_interval_ms / 1000, self.config.online_interval_ms / 1_000 },
         );
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
