@@ -3,6 +3,7 @@ const util = @import("util.zig");
 const http = @import("http.zig");
 const cfg = @import("config.zig");
 const types = @import("types.zig");
+const upd = @import("update.zig");
 
 const FeedKind = cfg.FeedKind;
 const RunSummary = types.RunSummary;
@@ -41,6 +42,14 @@ pub const Discord = struct {
     /// which is more reliable to read back.
     pub fn sendOnline(self: *Discord, arena: std.mem.Allocator, total: i64) SendError!void {
         const payload = try buildOnlinePayload(arena, total, self.username);
+        const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
+            return error.TransientFailure;
+        return self.post(arena, url, payload);
+    }
+
+    /// Post the game update info as an embed, e.g. "🆕 Bhop Pro Update".
+    pub fn sendUpdate(self: *Discord, arena: std.mem.Allocator, update: upd.UpdateInfo) SendError!void {
+        const payload = try buildUpdatePayload(arena, update, self.username);
         const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
             return error.TransientFailure;
         return self.post(arena, url, payload);
@@ -111,6 +120,35 @@ pub fn buildOnlinePayload(arena: std.mem.Allocator, total: i64, username: ?[]con
     }, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
 }
 
+/// Build the game-update payload: title "🆕 Bhop Pro Update", the version and
+/// the changelog as the description.
+pub fn buildUpdatePayload(arena: std.mem.Allocator, update: upd.UpdateInfo, username: ?[]const u8) SendError![]u8 {
+    const version = update.android_version orelse update.ios_version orelse "unknown";
+    const source = update.android_message orelse update.ios_message orelse version;
+    const clean_source = util.cleanText(arena, source, 1024) catch return error.TransientFailure;
+    const description = std.fmt.allocPrint(arena, "Bhop Pro update: {s}\n{s}", .{ version, clean_source }) catch return error.TransientFailure;
+
+    const Embed = struct {
+        title: []const u8,
+        description: []const u8,
+        color: u32,
+    };
+    const Payload = struct {
+        username: ?[]const u8,
+        embeds: []const Embed,
+        allowed_mentions: struct { parse: []const []const u8 },
+    };
+    return std.json.Stringify.valueAlloc(arena, Payload{
+        .username = username,
+        .embeds = &.{.{
+            .title = "🆕 Bhop Pro Update",
+            .description = description,
+            .color = 0x5865f2,
+        }},
+        .allowed_mentions = .{ .parse = &.{} },
+    }, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
+}
+
 test "builds the online embed like a run report" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -123,6 +161,23 @@ test "builds the online embed like a run report" {
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"color\":5763719") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"username\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"allowed_mentions\":{\"parse\":[]}") != null);
+}
+
+test "builds the update payload" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const update = upd.UpdateInfo{
+        .android_version = "1.7.4",
+        .android_message = "* New Deathrun map - Square",
+        .ios_version = "1.3.7",
+        .ios_message = null,
+    };
+    const payload = try buildUpdatePayload(arena.allocator(), update, null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"title\":\"🆕 Bhop Pro Update\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "Bhop Pro update: 1.7.4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "* New Deathrun map - Square") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"color\":5793266") != null);
 }
 
 test "includes WEBHOOK_USERNAME when configured" {

@@ -4,6 +4,7 @@ const cfg = @import("config.zig");
 const speedrun = @import("speedrun.zig");
 const discord = @import("discord.zig");
 const online = @import("online.zig");
+const upd = @import("update.zig");
 const state = @import("state.zig");
 
 const FeedKind = cfg.FeedKind;
@@ -29,6 +30,8 @@ pub const Worker = struct {
     scope: ?Scope = null,
     consecutive_failures: u32 = 0,
     online_next_at: i64 = 0,
+    info_arena: std.heap.ArenaAllocator,
+    last_update_key: []const u8 = "",
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -46,11 +49,13 @@ pub const Worker = struct {
             .state = store,
             .shutdown = shutdown,
             .scope_arena = std.heap.ArenaAllocator.init(gpa),
+            .info_arena = std.heap.ArenaAllocator.init(gpa),
         };
     }
 
     pub fn deinit(self: *Worker) void {
         self.scope_arena.deinit();
+        self.info_arena.deinit();
     }
 
     pub fn run(self: *Worker) void {
@@ -61,6 +66,7 @@ pub const Worker = struct {
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
             self.reportOnlineIfDue();
+            self.reportUpdateIfDue();
             if (self.shutdown.load(.acquire)) break;
             if (self.check()) |_| {
                 self.consecutive_failures = 0;
@@ -116,6 +122,31 @@ pub const Worker = struct {
         const interval: i64 = @intCast(self.config.online_interval_ms);
         const retry = @min(@as(i64, 15 * 60_000), interval);
         self.online_next_at = util.nowMs() + @max(@as(i64, 60_000), retry);
+    }
+
+    /// Fetch the Bhop Pro update info and post it to Discord when the snapshot
+    /// changes (version or changelog). Always posts the current info once at
+    /// startup, because the baseline key starts empty.
+    fn reportUpdateIfDue(self: *Worker) void {
+        if (self.shutdown.load(.acquire)) return;
+        const a = self.info_arena.allocator();
+
+        const update_info = upd.fetch(self.discord.http, a) catch |err| {
+            if (self.shutdown.load(.acquire)) return;
+            std.log.err("[Update] Could not fetch the update info: {s}", .{@errorName(err)});
+            return;
+        };
+
+        const key = upd.signature(a, update_info);
+        if (self.last_update_key.len > 0 and std.mem.eql(u8, self.last_update_key, key)) return;
+        self.last_update_key = key;
+
+        self.discord.sendUpdate(a, update_info) catch |err| {
+            if (self.shutdown.load(.acquire)) return;
+            std.log.err("[Update] Could not post the update info: {s}", .{@errorName(err)});
+            return;
+        };
+        std.log.info("[Update] Reported version {s}", .{update_info.android_version orelse "unknown"});
     }
 
     fn check(self: *Worker) !void {
