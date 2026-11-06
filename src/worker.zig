@@ -66,7 +66,7 @@ pub const Worker = struct {
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
             self.reportOnlineIfDue();
-            self.reportUpdateIfDue();
+            // self.reportUpdateIfDue(); // отключено пользователем: не пишем об апдейтах в канал
             if (self.shutdown.load(.acquire)) break;
             if (self.check()) |_| {
                 self.consecutive_failures = 0;
