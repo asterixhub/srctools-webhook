@@ -65,6 +65,8 @@ pub const Config = struct {
     state_file: []const u8,
     port: u16,
     webhook_username: ?[]const u8,
+    online_enabled: bool,
+    online_interval_ms: u64,
 };
 
 pub const ConfigError = error{
@@ -72,6 +74,7 @@ pub const ConfigError = error{
     InvalidControlCharacters,
     InvalidWebhookUrl,
     InvalidInteger,
+    InvalidBoolean,
     UnknownEvent,
     NoEvents,
     DisallowedGame,
@@ -123,6 +126,31 @@ fn integer(raw: ?[]const u8, fallback: i64, min: i64, max: i64) !i64 {
         return ConfigError.InvalidInteger;
     }
     return value;
+}
+
+fn boolean(raw: ?[]const u8, fallback: bool) !bool {
+    const s = raw orelse return fallback;
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    if (trimmed.len == 0) return fallback;
+    if (eqlLower(trimmed, "1") or eqlLower(trimmed, "true") or
+        eqlLower(trimmed, "yes") or eqlLower(trimmed, "on"))
+    {
+        return true;
+    }
+    if (eqlLower(trimmed, "0") or eqlLower(trimmed, "false") or
+        eqlLower(trimmed, "no") or eqlLower(trimmed, "off"))
+    {
+        return false;
+    }
+    std.log.err("Expected a boolean, received '{s}'.", .{trimmed});
+    return ConfigError.InvalidBoolean;
+}
+
+/// The Bhop Pro online counter, sent to the same Discord channel as runs every
+/// four hours. Set ONLINE_COUNT_ENABLED=false to turn it off.
+fn onlineIntervalMs(env: *const EnvMap) !u64 {
+    const minutes = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_MINUTES"), 240, 1, 1440);
+    return @as(u64, @intCast(minutes)) * 60_000;
 }
 
 /// Validate a Discord webhook URL the same way config.ts does, using manual
@@ -284,6 +312,8 @@ pub fn load(alloc: std.mem.Allocator) !Config {
         .state_file = state_file,
         .port = @intCast(port),
         .webhook_username = try optionalName(alloc, getEnv(&env, "WEBHOOK_USERNAME")),
+        .online_enabled = try boolean(getEnv(&env, "ONLINE_COUNT_ENABLED"), true),
+        .online_interval_ms = try onlineIntervalMs(&env),
     };
 }
 

@@ -3,6 +3,7 @@ const util = @import("util.zig");
 const cfg = @import("config.zig");
 const speedrun = @import("speedrun.zig");
 const discord = @import("discord.zig");
+const online = @import("online.zig");
 const state = @import("state.zig");
 
 const FeedKind = cfg.FeedKind;
@@ -27,6 +28,7 @@ pub const Worker = struct {
     scope_arena: std.heap.ArenaAllocator,
     scope: ?Scope = null,
     consecutive_failures: u32 = 0,
+    online_next_at: i64 = 0,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -52,9 +54,14 @@ pub const Worker = struct {
     }
 
     pub fn run(self: *Worker) void {
-        std.log.info("[Worker] Started; polling every {d}s", .{self.config.check_interval_ms / 1000});
+        std.log.info(
+            "[Worker] Started; polling every {d}s; online every {d}m",
+            .{ self.config.check_interval_ms / 1000, self.config.online_interval_ms / 60_000 },
+        );
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
+            self.reportOnlineIfDue();
+            if (self.shutdown.load(.acquire)) break;
             if (self.check()) |_| {
                 self.consecutive_failures = 0;
             } else |err| {
@@ -70,6 +77,45 @@ pub const Worker = struct {
             util.sleepMs(wait, self.shutdown) catch break;
         }
         std.log.info("[Worker] Stopped", .{});
+    }
+
+    /// Fetch the live in-game counter and post it once at startup, then every
+    /// ONLINE_COUNT_INTERVAL_MINUTES. A failure is retried in 15 minutes.
+    fn reportOnlineIfDue(self: *Worker) void {
+        if (!self.config.online_enabled) return;
+        if (util.nowMs() < self.online_next_at) return;
+
+        var arena_inst = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena_inst.deinit();
+        const a = arena_inst.allocator();
+
+        const summary = online.fetch(self.discord.http, a) catch |err| {
+            if (self.shutdown.load(.acquire)) return;
+            self.scheduleOnlineRetry();
+            std.log.err("[Online] Could not fetch the online count: {s}", .{@errorName(err)});
+            return;
+        };
+
+        self.discord.sendOnline(a, summary.total) catch |err| {
+            if (self.shutdown.load(.acquire)) return;
+            if (err == error.PermanentFailure) {
+                std.log.err("[Online] Discord rejected the online report permanently.", .{});
+                self.online_next_at = util.nowMs() + @as(i64, @intCast(self.config.online_interval_ms));
+            } else {
+                self.scheduleOnlineRetry();
+                std.log.err("[Online] Could not post the online count: {s}", .{@errorName(err)});
+            }
+            return;
+        };
+
+        self.online_next_at = util.nowMs() + @as(i64, @intCast(self.config.online_interval_ms));
+        std.log.info("[Online] Reported {d} player(s) in-game", .{summary.total});
+    }
+
+    fn scheduleOnlineRetry(self: *Worker) void {
+        const interval: i64 = @intCast(self.config.online_interval_ms);
+        const retry = @min(@as(i64, 15 * 60_000), interval);
+        self.online_next_at = util.nowMs() + @max(@as(i64, 60_000), retry);
     }
 
     fn check(self: *Worker) !void {

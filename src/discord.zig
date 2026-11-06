@@ -33,13 +33,26 @@ pub const Discord = struct {
 
     pub fn send(self: *Discord, arena: std.mem.Allocator, kind: FeedKind, run: RunSummary) SendError!void {
         const payload = try buildPayload(arena, kind, run, self.username);
+        return self.post(arena, self.url, payload);
+    }
 
+    /// Post the in-game player counter as an embed. `?wait=true` makes Discord
+    /// return the created message (HTTP 200) instead of an empty 204 response,
+    /// which is more reliable to read back.
+    pub fn sendOnline(self: *Discord, arena: std.mem.Allocator, total: i64) SendError!void {
+        const payload = try buildOnlinePayload(arena, total, self.username);
+        const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
+            return error.TransientFailure;
+        return self.post(arena, url, payload);
+    }
+
+    fn post(self: *Discord, arena: std.mem.Allocator, url: []const u8, payload: []const u8) SendError!void {
         var attempt: u32 = 1;
         while (attempt <= MAX_ATTEMPTS) : (attempt += 1) {
             if (self.shutdown.load(.acquire)) return error.Aborted;
 
             var body: http.Allocating = .init(arena);
-            const status: u16 = self.http.postJson(self.url, payload, &body) catch |e| {
+            const status: u16 = self.http.postJson(url, payload, &body) catch |e| {
                 if (self.shutdown.load(.acquire)) return error.Aborted;
                 if (attempt == MAX_ATTEMPTS) {
                     std.log.err("[Discord] Could not reach Discord: {s}", .{@errorName(e)});
@@ -70,6 +83,56 @@ pub const Discord = struct {
         return error.TransientFailure;
     }
 };
+
+/// Build the online-report payload in the same embed style as run reports:
+/// green left stripe, "🟢 Online" title and the live counter as the description.
+pub fn buildOnlinePayload(arena: std.mem.Allocator, total: i64, username: ?[]const u8) SendError![]u8 {
+    const description = std.fmt.allocPrint(arena, "Bhop Pro online in-game: {d}", .{total}) catch
+        return error.TransientFailure;
+
+    const Embed = struct {
+        title: []const u8,
+        description: []const u8,
+        color: u32,
+    };
+    const Payload = struct {
+        username: ?[]const u8,
+        embeds: []const Embed,
+        allowed_mentions: struct { parse: []const []const u8 },
+    };
+    return std.json.Stringify.valueAlloc(arena, Payload{
+        .username = username,
+        .embeds = &.{.{
+            .title = "🟢 Online",
+            .description = description,
+            .color = 0x57f287,
+        }},
+        .allowed_mentions = .{ .parse = &.{} },
+    }, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
+}
+
+test "builds the online embed like a run report" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const payload = try buildOnlinePayload(arena.allocator(), 143, null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"title\":\"🟢 Online\"") != null);
+    try std.testing.expect(
+        std.mem.indexOf(u8, payload, "\"description\":\"Bhop Pro online in-game: 143\"") != null,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"color\":5763719") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"username\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"allowed_mentions\":{\"parse\":[]}") != null);
+}
+
+test "includes WEBHOOK_USERNAME when configured" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const payload = try buildOnlinePayload(arena.allocator(), 0, "SRCTools");
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"username\":\"SRCTools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "online in-game: 0") != null);
+}
 
 /// Parse Discord's `{ "retry_after": <seconds> }`; fall back to 1000 ms.
 fn retryAfterMs(arena: std.mem.Allocator, body: []const u8) i64 {
