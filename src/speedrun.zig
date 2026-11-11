@@ -8,9 +8,6 @@ const Value = std.json.Value;
 const RunSummary = types.RunSummary;
 
 const API_BASE = "https://www.speedrun.com/api/v1";
-// Only the fields the embed actually reads: game (name/id), category (name),
-// level (map name), players (runner). Platform/region are never used, so we do
-// not embed them — smaller responses mean a smaller per-cycle parse.
 const RUN_EMBEDS = "game,category,level,players";
 const MAX_ATTEMPTS = 4;
 const MIN_REQUEST_GAP_MS = 650;
@@ -67,8 +64,6 @@ pub const Client = struct {
         return base + @as(i64, @intCast(self.prng.random().uintLessThan(u32, 250)));
     }
 
-    /// One API GET with the shared rate gate and retry/backoff. Returns the
-    /// response body allocated in `arena`.
     fn request(self: *Client, arena: std.mem.Allocator, url: []const u8) Error![]u8 {
         var attempt: u32 = 1;
         while (attempt <= MAX_ATTEMPTS) : (attempt += 1) {
@@ -106,7 +101,6 @@ pub const Client = struct {
         return std.json.parseFromSliceLeaky(Value, arena, body, .{}) catch return error.MalformedResponse;
     }
 
-    /// Concatenate the `data` arrays of a paginated collection, up to `limit`.
     fn collection(self: *Client, arena: std.mem.Allocator, path: []const u8, limit: usize) Error![]Value {
         var items: std.ArrayList(Value) = .empty;
         const sep: []const u8 = if (std.mem.indexOfScalar(u8, path, '?') != null) "&" else "?";
@@ -141,8 +135,6 @@ pub const Client = struct {
     }
 
     pub fn moderatedGames(self: *Client, arena: std.mem.Allocator, user_id: []const u8) Error![]Game {
-        // We only read each game's id and international name (both in the base
-        // resource), so no platforms/regions embed is requested.
         const path = try std.fmt.allocPrint(arena, "/games?moderator={s}", .{user_id});
         const items = try self.collection(arena, path, 500);
         var games: std.ArrayList(Game) = .empty;
@@ -162,7 +154,6 @@ pub const Client = struct {
         }
         const url = try std.fmt.allocPrint(arena, "{s}/games/{s}/variables", .{ API_BASE, game_id });
         const body = try self.request(arena, url);
-        // Cache the raw body under the gpa so it survives the cycle arena.
         const owned_body = try self.gpa.dupe(u8, body);
         errdefer self.gpa.free(owned_body);
         const gop = try self.var_cache.getOrPut(game_id);
@@ -182,7 +173,6 @@ pub const Client = struct {
         return data.array.items;
     }
 
-    /// Fetch and normalize the top run feed of one game for one status.
     fn runsForGame(
         self: *Client,
         arena: std.mem.Allocator,
@@ -197,8 +187,6 @@ pub const Client = struct {
         );
         const items = try self.collection(arena, path, 20);
 
-        // Trust the `game=` filter, but keep the explicit check so a malformed
-        // upstream page cannot leak another game into this feed.
         var scoped: std.ArrayList(Value) = .empty;
         for (items) |item| {
             if (item != .object) continue;
@@ -206,7 +194,6 @@ pub const Client = struct {
             if (std.mem.eql(u8, gid, game_id)) try scoped.append(arena, item);
         }
 
-        // Resolve subcategory variables once when this page carries values.
         var variables_for_game: []Value = &.{};
         for (scoped.items) |item| {
             if (runHasValues(item.object)) {
@@ -222,9 +209,6 @@ pub const Client = struct {
         return result.toOwnedSlice(arena);
     }
 
-    /// Fetch the top run feed for every selected game. Each game is requested
-    /// explicitly, matching the Node worker, because Speedrun.com serves public
-    /// game-scoped feeds even to an account that does not moderate the game.
     pub fn runs(
         self: *Client,
         arena: std.mem.Allocator,
@@ -260,7 +244,6 @@ fn runHasValues(run: std.json.ObjectMap) bool {
     return values == .object and values.object.count() > 0;
 }
 
-/// Port of normalizeRun from speedrun.ts.
 pub fn normalizeRun(arena: std.mem.Allocator, run_val: Value, variables: []Value) !RunSummary {
     if (run_val != .object) return error.MalformedResponse;
     const run = run_val.object;
@@ -351,7 +334,6 @@ fn labelsFrom(arena: std.mem.Allocator, selected: util.Object, variables: []Valu
         const value_id_val = selected.get(var_id) orelse continue;
         const value_id = util.asString(value_id_val) orelse continue;
 
-        // variable.values.values[value_id].label
         const values1 = variable.get("values") orelse continue;
         if (values1 != .object) continue;
         const values2 = values1.object.get("values") orelse continue;
@@ -397,7 +379,6 @@ fn playerNames(arena: std.mem.Allocator, players_val: ?Value) ![]const u8 {
     return std.mem.join(arena, ", ", names.items);
 }
 
-/// Join a base label and any subcategory labels with `sep`; null if empty.
 fn joinParts(arena: std.mem.Allocator, base: ?[]const u8, subcats: []const []const u8, sep: []const u8) !?[]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     if (base) |b| try parts.append(arena, b);

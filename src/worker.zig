@@ -86,8 +86,6 @@ pub const Worker = struct {
         std.log.info("[Worker] Stopped", .{});
     }
 
-    /// Fetch the live in-game counter and post it once at startup, then every
-    /// ONLINE_COUNT_INTERVAL_MINUTES. A failure is retried in 15 minutes.
     fn reportOnlineIfDue(self: *Worker) void {
         if (!self.config.online_enabled) return;
         if (util.nowMs() < self.online_next_at) return;
@@ -125,9 +123,6 @@ pub const Worker = struct {
         self.online_next_at = util.nowMs() + @max(@as(i64, 60_000), retry);
     }
 
-    /// Fetch the Bhop Pro update info and post it to Discord when the snapshot
-    /// changes (version or changelog). Always posts the current info once at
-    /// startup, because the baseline key starts empty.
     fn reportUpdateIfDue(self: *Worker) void {
         if (!self.config.update_alerts_enabled) return;
         if (self.shutdown.load(.acquire)) return;
@@ -170,8 +165,6 @@ pub const Worker = struct {
         var had_error = false;
         for (FEEDS) |kind| {
             if (!self.config.events.has(kind)) continue;
-            // One arena per feed: the previous feed's parsed JSON is released
-            // before the next one is fetched, so peak memory stays at one page.
             var feed_arena = std.heap.ArenaAllocator.init(self.gpa);
             defer feed_arena.deinit();
             const fa = feed_arena.allocator();
@@ -199,15 +192,10 @@ pub const Worker = struct {
         const account_id = try self.speedrun.profile(a);
         const games = try self.speedrun.moderatedGames(a, account_id);
 
-        // Poll every configured game even when this account is not a moderator:
-        // Speedrun.com serves game-scoped run feeds publicly. The moderator list
-        // is only used to log which selected games are outside that scope, which
-        // matches the Node worker's behavior.
         var matched: std.ArrayList([]const u8) = .empty;
         try matched.appendSlice(a, self.config.game_ids);
         std.sort.insertion([]const u8, matched.items, {}, lessThanStr);
 
-        // Stable fingerprint of the sorted scope (matches worker.ts sha256/16).
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
         for (matched.items, 0..) |id, i| {
             if (i > 0) hasher.update("\n");
@@ -266,7 +254,6 @@ pub const Worker = struct {
                     "[Discord] Webhook {s}: {s} {s}",
                     .{ if (exhausted) "failed permanently" else "scheduled for retry", event.kind.label(), event.run_id },
                 );
-                // One outage causes one bounded attempt per cycle, not a burst.
                 break;
             };
             try self.state.markDelivered(event.id);

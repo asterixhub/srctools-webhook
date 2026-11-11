@@ -16,9 +16,6 @@ pub const UpdateError = error{
     OutOfMemory,
 };
 
-/// Fetch the Bhop Pro update info published on the game servers.
-/// `android_version` / `android_message` describe the Android release, the iOS
-/// pair the iOS release, so both halves are kept in the summary.
 pub fn fetch(client: *http.Http, arena: std.mem.Allocator) !UpdateInfo {
     var body: http.Allocating = .init(arena);
     const status = try client.getJson(UPDATE_URL, null, &body);
@@ -26,7 +23,6 @@ pub fn fetch(client: *http.Http, arena: std.mem.Allocator) !UpdateInfo {
     return parse(arena, body.written());
 }
 
-/// Parse `/bhop-update.json`.
 pub fn parse(arena: std.mem.Allocator, body: []const u8) !UpdateInfo {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{}) catch
         return error.UnexpectedPayload;
@@ -45,7 +41,6 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8) !UpdateInfo {
     };
 }
 
-/// Stable fingerprint of the whole update snapshot (versions + changelogs).
 pub fn signature(arena: std.mem.Allocator, update: UpdateInfo) []const u8 {
     const version = update.android_version orelse update.ios_version orelse "unknown";
     const message = update.android_message orelse update.ios_message orelse version;

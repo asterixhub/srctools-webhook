@@ -1,8 +1,6 @@
 const std = @import("std");
 const http = @import("http.zig");
 
-/// The same endpoint the game's `OnlineInfoApiManager` polls. `totaluser` is the
-/// number shown under "GAMERS ONLINE" in the Bhop Pro main menu.
 pub const API_URL = "https://infocdn.bhoppro.com/infototal";
 const MAX_PLAYERS: i64 = 10_000_000;
 
@@ -10,7 +8,6 @@ pub const Summary = struct {
     total: i64,
 };
 
-/// Fetch and validate the live Bhop Pro online counter.
 pub fn fetch(client: *http.Http, arena: std.mem.Allocator) !Summary {
     var body: http.Allocating = .init(arena);
     const status = try client.getJson(API_URL, null, &body);
@@ -18,8 +15,6 @@ pub fn fetch(client: *http.Http, arena: std.mem.Allocator) !Summary {
     return parse(arena, body.written());
 }
 
-/// Parse `/infototal`. Only `totaluser` is required; the rest of the payload is
-/// ignored so a new field cannot break the report.
 pub fn parse(arena: std.mem.Allocator, body: []const u8) !Summary {
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{}) catch
         return error.UnexpectedPayload;

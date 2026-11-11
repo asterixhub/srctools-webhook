@@ -18,8 +18,6 @@ pub const RunSummary = struct {
     rejection_reason: ?[]const u8 = null,
 };
 
-/// One queued Discord delivery. `event_key` = "{account}:{kind}:{run_id}" and
-/// is unique, giving the same at-least-once dedup guarantee as the SQLite outbox.
 pub const OutboxEntry = struct {
     event_key: []const u8,
     kind: FeedKind,
@@ -51,7 +49,6 @@ pub const FeedState = struct {
     incomplete: []IncompleteEntry = &.{},
 };
 
-/// Full on-disk document. Written atomically on every mutation.
 pub const StateFile = struct {
     feeds: []FeedState = &.{},
     outbox: []OutboxEntry = &.{},

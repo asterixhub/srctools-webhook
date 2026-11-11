@@ -5,8 +5,6 @@ pub const FeedKind = enum {
     approved,
     rejected,
 
-    /// Stable label used in event keys, matching the Node worker's FeedKind
-    /// string ("newRun" / "approved" / "rejected").
     pub fn label(self: FeedKind) []const u8 {
         return switch (self) {
             .new_run => "newRun",
@@ -15,7 +13,6 @@ pub const FeedKind = enum {
         };
     }
 
-    /// The Speedrun.com `status` query value for this feed.
     pub fn status(self: FeedKind) []const u8 {
         return switch (self) {
             .new_run => "new",
@@ -84,9 +81,6 @@ pub const ConfigError = error{
 
 const EnvMap = std.process.Environ.Map;
 
-/// The current process's environment, captured by the startup code into the
-/// default `Io.Threaded` instance. Works on Windows (PEB) and POSIX (envp),
-/// with or without libc.
 fn processEnviron() std.process.Environ {
     return if (std.Options.debug_threaded_io) |t| t.environ.process_environ else .empty;
 }
@@ -147,30 +141,23 @@ fn boolean(raw: ?[]const u8, fallback: bool) !bool {
     return ConfigError.InvalidBoolean;
 }
 
-/// The Bhop Pro online counter, sent to the same Discord channel as runs every
-/// three hours. Set ONLINE_COUNT_ENABLED=false to turn it off.
 fn onlineIntervalMs(env: *const EnvMap) !u64 {
     const seconds = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_SECONDS"), 10800, 1, 86400);
     return @as(u64, @intCast(seconds)) * 1_000;
 }
 
-/// Validate a Discord webhook URL the same way config.ts does, using manual
-/// parsing so we do not depend on std.Uri quirks. Returns owned normalized URL.
 fn discordWebhook(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
-    // Must be HTTPS.
     const prefix = "https://";
     if (raw.len <= prefix.len or !std.ascii.startsWithIgnoreCase(raw, prefix)) {
         return webhookError();
     }
     const rest = raw[prefix.len..];
-    // No query/fragment allowed anywhere.
     if (std.mem.indexOfAny(u8, rest, "?#") != null) return webhookError();
 
     const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return webhookError();
     const host = rest[0..slash];
     const path = rest[slash + 1 ..];
 
-    // Reject credentials or an explicit port in the authority.
     if (std.mem.indexOfAny(u8, host, "@:") != null) return webhookError();
 
     var host_ok = false;
@@ -179,7 +166,6 @@ fn discordWebhook(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
     }
     if (!host_ok) return webhookError();
 
-    // Path must be api/.../webhooks/{id}/{token} with nothing after the token.
     var parts: std.ArrayList([]const u8) = .empty;
     defer parts.deinit(alloc);
     var it = std.mem.splitScalar(u8, path, '/');
@@ -205,10 +191,6 @@ fn webhookError() ConfigError {
     return ConfigError.InvalidWebhookUrl;
 }
 
-/// Optional webhook display name (Discord caps usernames at 80 chars). Blank or
-/// missing yields null, which omits the field so the webhook's own name is used.
-/// Set WEBHOOK_USERNAME to tell this worker's messages apart from any other bot
-/// posting to the same channel.
 fn optionalName(alloc: std.mem.Allocator, raw: ?[]const u8) !?[]u8 {
     const v = raw orelse return null;
     const trimmed = std.mem.trim(u8, v, " \t\r\n");

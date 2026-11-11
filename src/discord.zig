@@ -10,8 +10,6 @@ const RunSummary = types.RunSummary;
 
 const MAX_ATTEMPTS = 3;
 
-/// A permanent failure (4xx other than 429, or an unusable run) is never
-/// retried; a transient one is rescheduled by the outbox for a later cycle.
 pub const DeliveryError = error{ PermanentFailure, TransientFailure };
 pub const SendError = DeliveryError || util.Aborted;
 
@@ -37,9 +35,6 @@ pub const Discord = struct {
         return self.post(arena, self.url, payload);
     }
 
-    /// Post the in-game player counter as an embed. `?wait=true` makes Discord
-    /// return the created message (HTTP 200) instead of an empty 204 response,
-    /// which is more reliable to read back.
     pub fn sendOnline(self: *Discord, arena: std.mem.Allocator, total: i64) SendError!void {
         const payload = try buildOnlinePayload(arena, total, self.username);
         const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
@@ -47,7 +42,6 @@ pub const Discord = struct {
         return self.post(arena, url, payload);
     }
 
-    /// Post the game update info as an embed, e.g. "🆕 Bhop Pro Update".
     pub fn sendUpdate(self: *Discord, arena: std.mem.Allocator, update: upd.UpdateInfo) SendError!void {
         const payload = try buildUpdatePayload(arena, update, self.username);
         const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
@@ -93,8 +87,6 @@ pub const Discord = struct {
     }
 };
 
-/// Build the online-report payload in the same embed style as run reports:
-/// green left stripe, "🟢 Online" title and the live counter as the description.
 pub fn buildOnlinePayload(arena: std.mem.Allocator, total: i64, username: ?[]const u8) SendError![]u8 {
     const description = std.fmt.allocPrint(arena, "Bhop Pro online in-game: {d}", .{total}) catch
         return error.TransientFailure;
@@ -120,8 +112,6 @@ pub fn buildOnlinePayload(arena: std.mem.Allocator, total: i64, username: ?[]con
     }, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
 }
 
-/// Build the game-update payload: title "🆕 Bhop Pro Update", the version and
-/// the changelog as the description.
 pub fn buildUpdatePayload(arena: std.mem.Allocator, update: upd.UpdateInfo, username: ?[]const u8) SendError![]u8 {
     const version = update.android_version orelse update.ios_version orelse "unknown";
     const source = update.android_message orelse update.ios_message orelse version;
@@ -189,7 +179,6 @@ test "includes WEBHOOK_USERNAME when configured" {
     try std.testing.expect(std.mem.indexOf(u8, payload, "online in-game: 0") != null);
 }
 
-/// Parse Discord's `{ "retry_after": <seconds> }`; fall back to 1000 ms.
 fn retryAfterMs(arena: std.mem.Allocator, body: []const u8) i64 {
     const parsed = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return 1000;
     defer parsed.deinit();
@@ -201,13 +190,10 @@ fn retryAfterMs(arena: std.mem.Allocator, body: []const u8) i64 {
     return 1000;
 }
 
-/// Port of discord.ts safe(): keep newlines + printable chars, trim, truncate.
 fn safe(arena: std.mem.Allocator, value: []const u8, max: usize) ![]u8 {
     return util.cleanText(arena, value, max);
 }
 
-/// Build the full webhook JSON payload. Returns error.PermanentFailure for a
-/// run with no usable URL, matching buildEmbed's throw in discord.ts.
 pub fn buildPayload(arena: std.mem.Allocator, kind: FeedKind, run: RunSummary, username: ?[]const u8) SendError![]u8 {
     const run_url = run.run_url orelse return error.PermanentFailure;
 
@@ -244,7 +230,6 @@ pub fn buildPayload(arena: std.mem.Allocator, kind: FeedKind, run: RunSummary, u
         }
     }
 
-    // Serialize with the JSON stringifier so escaping matches JSON.stringify.
     const Embed = struct {
         title: []const u8,
         url: []const u8,
@@ -262,7 +247,5 @@ pub fn buildPayload(arena: std.mem.Allocator, kind: FeedKind, run: RunSummary, u
         .allowed_mentions = .{ .parse = &.{} },
     };
 
-    // emit_null_optional_fields = false drops `username` when it is null, so an
-    // unset WEBHOOK_USERNAME reproduces the exact prior payload.
     return std.json.Stringify.valueAlloc(arena, payload, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
 }

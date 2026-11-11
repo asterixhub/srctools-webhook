@@ -12,11 +12,6 @@ pub const panic = std.debug.no_panic;
 var g_shutdown: ?*std.atomic.Value(bool) = null;
 
 pub fn main() !void {
-    // A single-threaded slab allocator. It packs many small allocations into
-    // shared backing pages instead of giving each one a whole 4 KiB OS page,
-    // which is what the page_allocator did — the HTTP client, TLS, the seen-run
-    // caches and the state store make thousands of tiny allocations, so that
-    // rounding is what pinned RSS at ~4 MB. Safety/leak-tracking only in Debug.
     var gpa_state = std.heap.DebugAllocator(.{
         .thread_safe = false,
         .safety = builtin.mode == .Debug,

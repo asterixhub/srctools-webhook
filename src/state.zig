@@ -12,8 +12,6 @@ const STATE_LIMIT = std.Io.Limit.limited(16 * 1024 * 1024);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/// A pending delivery handed to the worker. Slices borrow store-owned memory
-/// and stay valid until the entry is delivered or pruned.
 pub const OutboxView = struct {
     id: i64,
     kind: FeedKind,
@@ -54,9 +52,6 @@ pub const StateStore = struct {
     feeds: std.ArrayList(Feed) = .empty,
     outbox: std.ArrayList(OutboxRec) = .empty,
     next_id: i64 = 1,
-    /// Set whenever an in-memory change has not been written yet. A quiet poll
-    /// changes nothing, so the state file is left untouched instead of being
-    /// rewritten four times per cycle.
     dirty: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !StateStore {
@@ -123,9 +118,6 @@ pub const StateStore = struct {
         std.log.info("[State] Loaded {d} feed(s), {d} outbox entrie(s).", .{ self.feeds.items.len, self.outbox.items.len });
     }
 
-    /// Port of applyFeedPage: prime on first sight, then enqueue genuinely-new
-    /// runs, remember seen ids, advance the high-water mark. Returns the number
-    /// of newly enqueued deliveries.
     pub fn applyFeedPage(
         self: *StateStore,
         account_id: []const u8,
@@ -270,7 +262,6 @@ pub const StateStore = struct {
         try self.persist();
     }
 
-    // --- internal helpers -------------------------------------------------
 
     fn getFeed(self: *StateStore, feed_key: []const u8) ?*Feed {
         for (self.feeds.items) |*f| {
