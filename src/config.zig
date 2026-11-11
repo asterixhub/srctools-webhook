@@ -61,9 +61,6 @@ pub const Config = struct {
     game_ids: []const []const u8,
     state_file: []const u8,
     webhook_username: ?[]const u8,
-    online_enabled: bool,
-    online_interval_ms: u64,
-    update_alerts_enabled: bool,
 };
 
 pub const ConfigError = error{
@@ -71,7 +68,6 @@ pub const ConfigError = error{
     InvalidControlCharacters,
     InvalidWebhookUrl,
     InvalidInteger,
-    InvalidBoolean,
     UnknownEvent,
     NoEvents,
     DisallowedGame,
@@ -120,29 +116,6 @@ fn integer(raw: ?[]const u8, fallback: i64, min: i64, max: i64) !i64 {
         return ConfigError.InvalidInteger;
     }
     return value;
-}
-
-fn boolean(raw: ?[]const u8, fallback: bool) !bool {
-    const s = raw orelse return fallback;
-    const trimmed = std.mem.trim(u8, s, " \t\r\n");
-    if (trimmed.len == 0) return fallback;
-    if (eqlLower(trimmed, "1") or eqlLower(trimmed, "true") or
-        eqlLower(trimmed, "yes") or eqlLower(trimmed, "on"))
-    {
-        return true;
-    }
-    if (eqlLower(trimmed, "0") or eqlLower(trimmed, "false") or
-        eqlLower(trimmed, "no") or eqlLower(trimmed, "off"))
-    {
-        return false;
-    }
-    std.log.err("Expected a boolean, received '{s}'.", .{trimmed});
-    return ConfigError.InvalidBoolean;
-}
-
-fn onlineIntervalMs(env: *const EnvMap) !u64 {
-    const seconds = try integer(getEnv(env, "ONLINE_COUNT_INTERVAL_SECONDS"), 10800, 1, 86400);
-    return @as(u64, @intCast(seconds)) * 1_000;
 }
 
 fn discordWebhook(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
@@ -290,9 +263,6 @@ pub fn load(alloc: std.mem.Allocator) !Config {
         .game_ids = try parseGameIds(alloc, getEnv(&env, "MONITORED_GAME_IDS")),
         .state_file = state_file,
         .webhook_username = try optionalName(alloc, getEnv(&env, "WEBHOOK_USERNAME")),
-        .online_enabled = try boolean(getEnv(&env, "ONLINE_COUNT_ENABLED"), true),
-        .online_interval_ms = try onlineIntervalMs(&env),
-        .update_alerts_enabled = try boolean(getEnv(&env, "UPDATE_ALERTS_ENABLED"), true),
     };
 }
 

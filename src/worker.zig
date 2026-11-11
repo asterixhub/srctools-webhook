@@ -3,8 +3,6 @@ const util = @import("util.zig");
 const cfg = @import("config.zig");
 const speedrun = @import("speedrun.zig");
 const discord = @import("discord.zig");
-const online = @import("online.zig");
-const upd = @import("update.zig");
 const state = @import("state.zig");
 
 const FeedKind = cfg.FeedKind;
@@ -29,10 +27,6 @@ pub const Worker = struct {
     scope_arena: std.heap.ArenaAllocator,
     scope: ?Scope = null,
     consecutive_failures: u32 = 0,
-    online_next_at: i64 = 0,
-    update_next_at: i64 = 0,
-    info_arena: std.heap.ArenaAllocator,
-    last_update_key: []const u8 = "",
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -50,24 +44,17 @@ pub const Worker = struct {
             .state = store,
             .shutdown = shutdown,
             .scope_arena = std.heap.ArenaAllocator.init(gpa),
-            .info_arena = std.heap.ArenaAllocator.init(gpa),
         };
     }
 
     pub fn deinit(self: *Worker) void {
         self.scope_arena.deinit();
-        self.info_arena.deinit();
     }
 
     pub fn run(self: *Worker) void {
-        std.log.info(
-            "[Worker] Started; polling every {d}s; online every {d}s",
-            .{ self.config.check_interval_ms / 1000, self.config.online_interval_ms / 1_000 },
-        );
+        std.log.info("[Worker] Started; polling every {d}s", .{self.config.check_interval_ms / 1000});
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
-            self.reportOnlineIfDue();
-            self.reportUpdateIfDue();
             if (self.shutdown.load(.acquire)) break;
             if (self.check()) |_| {
                 self.consecutive_failures = 0;
@@ -84,68 +71,6 @@ pub const Worker = struct {
             util.sleepMs(wait, self.shutdown) catch break;
         }
         std.log.info("[Worker] Stopped", .{});
-    }
-
-    fn reportOnlineIfDue(self: *Worker) void {
-        if (!self.config.online_enabled) return;
-        if (util.nowMs() < self.online_next_at) return;
-
-        var arena_inst = std.heap.ArenaAllocator.init(self.gpa);
-        defer arena_inst.deinit();
-        const a = arena_inst.allocator();
-
-        const summary = online.fetch(self.discord.http, a) catch |err| {
-            if (self.shutdown.load(.acquire)) return;
-            self.scheduleOnlineRetry();
-            std.log.err("[Online] Could not fetch the online count: {s}", .{@errorName(err)});
-            return;
-        };
-
-        self.discord.sendOnline(a, summary.total) catch |err| {
-            if (self.shutdown.load(.acquire)) return;
-            if (err == error.PermanentFailure) {
-                std.log.err("[Online] Discord rejected the online report permanently.", .{});
-                self.online_next_at = util.nowMs() + @as(i64, @intCast(self.config.online_interval_ms));
-            } else {
-                self.scheduleOnlineRetry();
-                std.log.err("[Online] Could not post the online count: {s}", .{@errorName(err)});
-            }
-            return;
-        };
-
-        self.online_next_at = util.nowMs() + @as(i64, @intCast(self.config.online_interval_ms));
-        std.log.info("[Online] Reported {d} player(s) in-game", .{summary.total});
-    }
-
-    fn scheduleOnlineRetry(self: *Worker) void {
-        const interval: i64 = @intCast(self.config.online_interval_ms);
-        const retry = @min(@as(i64, 15 * 60_000), interval);
-        self.online_next_at = util.nowMs() + @max(@as(i64, 60_000), retry);
-    }
-
-    fn reportUpdateIfDue(self: *Worker) void {
-        if (!self.config.update_alerts_enabled) return;
-        if (self.shutdown.load(.acquire)) return;
-        if (util.nowMs() < self.update_next_at) return;
-        self.update_next_at = util.nowMs() + @as(i64, 25 * 60_000);
-        const a = self.info_arena.allocator();
-
-        const update_info = upd.fetch(self.discord.http, a) catch |err| {
-            if (self.shutdown.load(.acquire)) return;
-            std.log.err("[Update] Could not fetch the update info: {s}", .{@errorName(err)});
-            return;
-        };
-
-        const key = upd.signature(a, update_info);
-        if (self.last_update_key.len > 0 and std.mem.eql(u8, self.last_update_key, key)) return;
-        self.last_update_key = key;
-
-        self.discord.sendUpdate(a, update_info) catch |err| {
-            if (self.shutdown.load(.acquire)) return;
-            std.log.err("[Update] Could not post the update info: {s}", .{@errorName(err)});
-            return;
-        };
-        std.log.info("[Update] Reported version {s}", .{update_info.android_version orelse "unknown"});
     }
 
     fn check(self: *Worker) !void {

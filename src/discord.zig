@@ -3,7 +3,6 @@ const util = @import("util.zig");
 const http = @import("http.zig");
 const cfg = @import("config.zig");
 const types = @import("types.zig");
-const upd = @import("update.zig");
 
 const FeedKind = cfg.FeedKind;
 const RunSummary = types.RunSummary;
@@ -33,20 +32,6 @@ pub const Discord = struct {
     pub fn send(self: *Discord, arena: std.mem.Allocator, kind: FeedKind, run: RunSummary) SendError!void {
         const payload = try buildPayload(arena, kind, run, self.username);
         return self.post(arena, self.url, payload);
-    }
-
-    pub fn sendOnline(self: *Discord, arena: std.mem.Allocator, total: i64) SendError!void {
-        const payload = try buildOnlinePayload(arena, total, self.username);
-        const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
-            return error.TransientFailure;
-        return self.post(arena, url, payload);
-    }
-
-    pub fn sendUpdate(self: *Discord, arena: std.mem.Allocator, update: upd.UpdateInfo) SendError!void {
-        const payload = try buildUpdatePayload(arena, update, self.username);
-        const url = std.fmt.allocPrint(arena, "{s}?wait=true", .{self.url}) catch
-            return error.TransientFailure;
-        return self.post(arena, url, payload);
     }
 
     fn post(self: *Discord, arena: std.mem.Allocator, url: []const u8, payload: []const u8) SendError!void {
@@ -86,113 +71,6 @@ pub const Discord = struct {
         return error.TransientFailure;
     }
 };
-
-pub fn buildOnlinePayload(arena: std.mem.Allocator, total: i64, username: ?[]const u8) SendError![]u8 {
-    const description = std.fmt.allocPrint(arena, "Bhop Pro online in-game: {d}", .{total}) catch
-        return error.TransientFailure;
-
-    const Embed = struct {
-        title: []const u8,
-        description: []const u8,
-        color: u32,
-    };
-    const Payload = struct {
-        username: ?[]const u8,
-        embeds: []const Embed,
-        allowed_mentions: struct { parse: []const []const u8 },
-    };
-    return std.json.Stringify.valueAlloc(arena, Payload{
-        .username = username,
-        .embeds = &.{.{
-            .title = "🟢 Online",
-            .description = description,
-            .color = 0x57f287,
-        }},
-        .allowed_mentions = .{ .parse = &.{} },
-    }, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
-}
-
-pub fn buildUpdatePayload(arena: std.mem.Allocator, update: upd.UpdateInfo, username: ?[]const u8) SendError![]u8 {
-    const version = update.android_version orelse update.ios_version orelse "unknown";
-    const source = update.android_message orelse update.ios_message orelse version;
-    const clean_source = util.cleanText(arena, source, 1024) catch return error.TransientFailure;
-    const description = std.fmt.allocPrint(arena, "Bhop Pro update: {s}\n{s}", .{ version, clean_source }) catch return error.TransientFailure;
-
-    const Embed = struct {
-        title: []const u8,
-        description: []const u8,
-        color: u32,
-    };
-    const Payload = struct {
-        username: ?[]const u8,
-        embeds: []const Embed,
-        allowed_mentions: struct { parse: []const []const u8 },
-    };
-    return std.json.Stringify.valueAlloc(arena, Payload{
-        .username = username,
-        .embeds = &.{.{
-            .title = "🆕 Bhop Pro Update",
-            .description = description,
-            .color = 0x5865f2,
-        }},
-        .allowed_mentions = .{ .parse = &.{} },
-    }, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
-}
-
-test "builds the online embed like a run report" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const payload = try buildOnlinePayload(arena.allocator(), 143, null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"title\":\"🟢 Online\"") != null);
-    try std.testing.expect(
-        std.mem.indexOf(u8, payload, "\"description\":\"Bhop Pro online in-game: 143\"") != null,
-    );
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"color\":5763719") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"username\"") == null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"allowed_mentions\":{\"parse\":[]}") != null);
-}
-
-test "builds the update payload" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const update = upd.UpdateInfo{
-        .android_version = "1.7.4",
-        .android_message = "* New Deathrun map - Square",
-        .ios_version = "1.3.7",
-        .ios_message = null,
-    };
-    const payload = try buildUpdatePayload(arena.allocator(), update, null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"title\":\"🆕 Bhop Pro Update\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "Bhop Pro update: 1.7.4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "* New Deathrun map - Square") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"color\":5793266") != null);
-}
-
-test "includes WEBHOOK_USERNAME when configured" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
-    const payload = try buildOnlinePayload(arena.allocator(), 0, "SRCTools");
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"username\":\"SRCTools\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "online in-game: 0") != null);
-}
-
-fn retryAfterMs(arena: std.mem.Allocator, body: []const u8) i64 {
-    const parsed = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return 1000;
-    defer parsed.deinit();
-    if (parsed.value == .object) {
-        if (util.asNumber(parsed.value.object.get("retry_after"))) |secs| {
-            if (std.math.isFinite(secs)) return @intFromFloat(@max(0.0, secs * 1000.0));
-        }
-    }
-    return 1000;
-}
-
-fn safe(arena: std.mem.Allocator, value: []const u8, max: usize) ![]u8 {
-    return util.cleanText(arena, value, max);
-}
 
 pub fn buildPayload(arena: std.mem.Allocator, kind: FeedKind, run: RunSummary, username: ?[]const u8) SendError![]u8 {
     const run_url = run.run_url orelse return error.PermanentFailure;
@@ -248,4 +126,65 @@ pub fn buildPayload(arena: std.mem.Allocator, kind: FeedKind, run: RunSummary, u
     };
 
     return std.json.Stringify.valueAlloc(arena, payload, .{ .emit_null_optional_fields = false }) catch error.TransientFailure;
+}
+
+fn retryAfterMs(arena: std.mem.Allocator, body: []const u8) i64 {
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, body, .{}) catch return 1000;
+    defer parsed.deinit();
+    if (parsed.value == .object) {
+        if (util.asNumber(parsed.value.object.get("retry_after"))) |secs| {
+            if (std.math.isFinite(secs)) return @intFromFloat(@max(0.0, secs * 1000.0));
+        }
+    }
+    return 1000;
+}
+
+fn safe(arena: std.mem.Allocator, value: []const u8, max: usize) ![]u8 {
+    return util.cleanText(arena, value, max);
+}
+
+test "builds the new run payload like the webhook expects" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const run = RunSummary{
+        .id = "run1",
+        .run_url = try arena.allocator().dupe(u8, "https://www.speedrun.com/run/abc"),
+        .game_id = "o1yj25r1",
+        .game_name = "Run pro",
+        .category_name = "Any%",
+        .map_name = "Map 1",
+        .runner = "Some Runner",
+        .primary_seconds = 12.345,
+        .time_display = "12.345",
+        .submitted = null,
+        .verify_date = null,
+        .rejection_reason = null,
+    };
+    const payload = try buildPayload(arena.allocator(), .new_run, run, null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"title\":\"🏆 New Run\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"url\":\"https://www.speedrun.com/run/abc\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "Map 1 in 0m 12s 345ms by Some Runner") != null);
+}
+
+test "includes WEBHOOK_USERNAME when configured" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const run = RunSummary{
+        .id = "run1",
+        .run_url = try arena.allocator().dupe(u8, "https://www.speedrun.com/run/abc"),
+        .game_id = "o1yj25r1",
+        .game_name = "Run pro",
+        .category_name = "Any%",
+        .map_name = "Map 1",
+        .runner = "Some Runner",
+        .primary_seconds = 12.345,
+        .time_display = "12.345",
+        .submitted = null,
+        .verify_date = null,
+        .rejection_reason = null,
+    };
+    const payload = try buildPayload(arena.allocator(), .new_run, run, "SRCTools");
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"username\":\"SRCTools\"") != null);
 }
