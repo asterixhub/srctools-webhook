@@ -129,6 +129,7 @@ pub const Worker = struct {
     /// changes (version or changelog). Always posts the current info once at
     /// startup, because the baseline key starts empty.
     fn reportUpdateIfDue(self: *Worker) void {
+        if (!self.config.update_alerts_enabled) return;
         if (self.shutdown.load(.acquire)) return;
         if (util.nowMs() < self.update_next_at) return;
         self.update_next_at = util.nowMs() + @as(i64, 25 * 60_000);
@@ -193,16 +194,12 @@ pub const Worker = struct {
         const account_id = try self.speedrun.profile(a);
         const games = try self.speedrun.moderatedGames(a, account_id);
 
-        // Intersect configured games with the ones this account moderates.
+        // Poll every configured game even when this account is not a moderator:
+        // Speedrun.com serves game-scoped run feeds publicly. The moderator list
+        // is only used to log which selected games are outside that scope, which
+        // matches the Node worker's behavior.
         var matched: std.ArrayList([]const u8) = .empty;
-        for (self.config.game_ids) |want| {
-            for (games) |g| {
-                if (std.mem.eql(u8, g.id, want)) {
-                    try matched.append(a, want);
-                    break;
-                }
-            }
-        }
+        try matched.appendSlice(a, self.config.game_ids);
         std.sort.insertion([]const u8, matched.items, {}, lessThanStr);
 
         // Stable fingerprint of the sorted scope (matches worker.ts sha256/16).
@@ -232,8 +229,22 @@ pub const Worker = struct {
         } else {
             std.log.info("[Worker] Scope refreshed: {d} game(s)", .{matched.items.len});
         }
-        if (self.config.game_ids.len != matched.items.len) {
-            std.log.warn("[Worker] Some selected game(s) are not moderated by this account and were ignored.", .{});
+        var unmoderated: usize = 0;
+        for (self.config.game_ids) |want| {
+            var found = false;
+            for (games) |g| {
+                if (std.mem.eql(u8, g.id, want)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) unmoderated += 1;
+        }
+        if (unmoderated > 0) {
+            std.log.warn(
+                "[Worker] Polling public run feeds for {d} selected game(s) not moderated by this account.",
+                .{unmoderated},
+            );
         }
         return scope;
     }

@@ -67,6 +67,7 @@ pub const Config = struct {
     webhook_username: ?[]const u8,
     online_enabled: bool,
     online_interval_ms: u64,
+    update_alerts_enabled: bool,
 };
 
 pub const ConfigError = error{
@@ -314,6 +315,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
         .webhook_username = try optionalName(alloc, getEnv(&env, "WEBHOOK_USERNAME")),
         .online_enabled = try boolean(getEnv(&env, "ONLINE_COUNT_ENABLED"), true),
         .online_interval_ms = try onlineIntervalMs(&env),
+        .update_alerts_enabled = try boolean(getEnv(&env, "UPDATE_ALERTS_ENABLED"), true),
     };
 }
 

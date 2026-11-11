@@ -182,8 +182,49 @@ pub const Client = struct {
         return data.array.items;
     }
 
-    /// Fetch, filter to scoped games, resolve subcategory variables and
-    /// normalize the top run feed for one status.
+    /// Fetch and normalize the top run feed of one game for one status.
+    fn runsForGame(
+        self: *Client,
+        arena: std.mem.Allocator,
+        status: []const u8,
+        order: []const u8,
+        game_id: []const u8,
+    ) Error![]RunSummary {
+        const path = try std.fmt.allocPrint(
+            arena,
+            "/runs?game={s}&status={s}&orderby={s}&direction=desc&embed={s}&_={d}",
+            .{ game_id, status, order, RUN_EMBEDS, util.nowMs() },
+        );
+        const items = try self.collection(arena, path, 20);
+
+        // Trust the `game=` filter, but keep the explicit check so a malformed
+        // upstream page cannot leak another game into this feed.
+        var scoped: std.ArrayList(Value) = .empty;
+        for (items) |item| {
+            if (item != .object) continue;
+            const gid = (try util.resourceId(arena, item.object.get("game"))) orelse continue;
+            if (std.mem.eql(u8, gid, game_id)) try scoped.append(arena, item);
+        }
+
+        // Resolve subcategory variables once when this page carries values.
+        var variables_for_game: []Value = &.{};
+        for (scoped.items) |item| {
+            if (runHasValues(item.object)) {
+                variables_for_game = try self.variables(arena, game_id);
+                break;
+            }
+        }
+
+        var result: std.ArrayList(RunSummary) = .empty;
+        for (scoped.items) |item| {
+            try result.append(arena, try normalizeRun(arena, item, variables_for_game));
+        }
+        return result.toOwnedSlice(arena);
+    }
+
+    /// Fetch the top run feed for every selected game. Each game is requested
+    /// explicitly, matching the Node worker, because Speedrun.com serves public
+    /// game-scoped feeds even to an account that does not moderate the game.
     pub fn runs(
         self: *Client,
         arena: std.mem.Allocator,
@@ -191,34 +232,10 @@ pub const Client = struct {
         game_ids: []const []const u8,
     ) Error![]RunSummary {
         const order: []const u8 = if (std.mem.eql(u8, status, "verified")) "verify-date" else "submitted";
-        const path = try std.fmt.allocPrint(
-            arena,
-            "/runs?status={s}&orderby={s}&direction=desc&embed={s}&_={d}",
-            .{ status, order, RUN_EMBEDS, util.nowMs() },
-        );
-        const items = try self.collection(arena, path, 20);
-
-        var scoped: std.ArrayList(Value) = .empty;
-        for (items) |item| {
-            if (item != .object) continue;
-            const gid = (try util.resourceId(arena, item.object.get("game"))) orelse continue;
-            if (inSet(game_ids, gid)) try scoped.append(arena, item);
-        }
-
-        // Resolve variables once per game that actually carries values.
-        var vars_by_game = std.StringHashMap([]Value).init(arena);
-        for (scoped.items) |item| {
-            const gid = (try util.resourceId(arena, item.object.get("game"))) orelse continue;
-            if (vars_by_game.contains(gid)) continue;
-            if (!runHasValues(item.object)) continue;
-            try vars_by_game.put(gid, try self.variables(arena, gid));
-        }
-
         var result: std.ArrayList(RunSummary) = .empty;
-        for (scoped.items) |item| {
-            const gid = try util.resourceId(arena, item.object.get("game"));
-            const vars: []Value = if (gid) |g| (vars_by_game.get(g) orelse &.{}) else &.{};
-            try result.append(arena, try normalizeRun(arena, item, vars));
+        for (game_ids) |game_id| {
+            const page = try self.runsForGame(arena, status, order, game_id);
+            try result.appendSlice(arena, page);
         }
         return result.toOwnedSlice(arena);
     }
@@ -234,13 +251,6 @@ fn pageHasNext(root: std.json.ObjectMap) bool {
         if (util.asString(link.object.get("rel"))) |rel| {
             if (std.mem.eql(u8, rel, "next")) return true;
         }
-    }
-    return false;
-}
-
-fn inSet(set: []const []const u8, value: []const u8) bool {
-    for (set) |s| {
-        if (std.mem.eql(u8, s, value)) return true;
     }
     return false;
 }
