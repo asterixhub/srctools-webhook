@@ -60,7 +60,6 @@ pub const Config = struct {
     events: Events,
     game_ids: []const []const u8,
     state_file: []const u8,
-    port: u16,
     webhook_username: ?[]const u8,
     online_enabled: bool,
     online_interval_ms: u64,
@@ -273,9 +272,6 @@ pub fn load(alloc: std.mem.Allocator) !Config {
     const interval_raw = getEnv(&env, "CHECK_INTERVAL_SECONDS");
     const interval_s = try integer(interval_raw, 25, 1, 3600);
 
-    const port_raw = getEnv(&env, "PORT");
-    const port = try integer(port_raw, 3000, 1, 65535);
-
     const volume = getEnv(&env, "RAILWAY_VOLUME_MOUNT_PATH");
     const data_dir = blk: {
         if (volume) |v| {
@@ -293,7 +289,6 @@ pub fn load(alloc: std.mem.Allocator) !Config {
         .events = try parseEvents(getEnv(&env, "MONITORED_EVENTS")),
         .game_ids = try parseGameIds(alloc, getEnv(&env, "MONITORED_GAME_IDS")),
         .state_file = state_file,
-        .port = @intCast(port),
         .webhook_username = try optionalName(alloc, getEnv(&env, "WEBHOOK_USERNAME")),
         .online_enabled = try boolean(getEnv(&env, "ONLINE_COUNT_ENABLED"), true),
         .online_interval_ms = try onlineIntervalMs(&env),
