@@ -8,7 +8,7 @@ const Value = std.json.Value;
 const RunSummary = types.RunSummary;
 
 const API_BASE = "https://www.speedrun.com/api/v1";
-const RUN_EMBEDS = "game,category,level,players";
+const RUN_EMBEDS = "category,level,players";
 const MAX_ATTEMPTS = 4;
 const MIN_REQUEST_GAP_MS = 650;
 const VARIABLES_CACHE_MS = 12 * 60 * 60 * 1000;

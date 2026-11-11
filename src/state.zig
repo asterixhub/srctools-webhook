@@ -6,7 +6,7 @@ const types = @import("types.zig");
 const FeedKind = cfg.FeedKind;
 const RunSummary = types.RunSummary;
 
-const SEEN_CAPACITY = 600;
+const SEEN_CAPACITY = 200;
 const MAX_DELIVERY_ATTEMPTS = 6;
 const STATE_LIMIT = std.Io.Limit.limited(16 * 1024 * 1024);
 
