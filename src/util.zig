@@ -150,14 +150,14 @@ pub fn formatDuration(alloc: std.mem.Allocator, seconds: f64) ![]u8 {
 
     var base: []u8 = undefined;
     if (hours > 0) {
-        base = try std.fmt.allocPrint(alloc, "{d}:{d:0>2}:{d:0>2}", .{ hours, minutes, secs });
+        base = try std.fmt.allocPrint(alloc, "{d}:{s}:{s}", .{ hours, try padInt(alloc, minutes, 2), try padInt(alloc, secs, 2) });
     } else if (minutes > 0) {
-        base = try std.fmt.allocPrint(alloc, "{d}:{d:0>2}", .{ minutes, secs });
+        base = try std.fmt.allocPrint(alloc, "{d}:{s}", .{ minutes, try padInt(alloc, secs, 2) });
     } else {
         base = try std.fmt.allocPrint(alloc, "{d}", .{secs});
     }
     if (ms == 0) return base;
-    return std.fmt.allocPrint(alloc, "{s}.{d:0>3}", .{ base, ms });
+    return std.fmt.allocPrint(alloc, "{s}.{s}", .{ base, try padInt(alloc, ms, 3) });
 }
 
 /// "1m 22s 111ms" — mirrors compactDuration.
@@ -166,5 +166,55 @@ pub fn compactDuration(alloc: std.mem.Allocator, seconds: f64) ![]u8 {
     const m = @divFloor(total_ms, 60_000);
     const s = @mod(@divFloor(total_ms, 1000), 60);
     const ms = @mod(total_ms, 1000);
-    return std.fmt.allocPrint(alloc, "{d}m {d}s {d:0>3}ms", .{ m, s, ms });
+    return try std.fmt.allocPrint(alloc, "{d}m {d}s {s}ms", .{ m, s, try padInt(alloc, ms, 3) });
+}
+
+/// Zero-pad a non-negative integer to `width` digits. The `{d:0>3}` / `{d:0>2}`
+/// format specs are not reliable here (they render a sign prefix, e.g. "+345"), so
+/// the padding is done explicitly to keep the output clean.
+fn padInt(alloc: std.mem.Allocator, value: i64, width: usize) ![]u8 {
+    var buf: [32]u8 = undefined;
+    const s = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return error.OutOfMemory;
+    if (s.len >= width) return try alloc.dupe(u8, s);
+    const padded = try alloc.alloc(u8, width);
+    @memset(padded, '0');
+    const start = width - s.len;
+    @memcpy(padded[start..], s);
+    return padded;
+}
+
+test "compactDuration has no sign prefix and pads milliseconds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const short_ = try compactDuration(a, 12.345);
+    defer arena.allocator().free(short_);
+    try std.testing.expectEqualStrings("0m 12s 345ms", short_);
+
+    const tiny = try compactDuration(a, 45.6);
+    defer arena.allocator().free(tiny);
+    try std.testing.expectEqualStrings("0m 45s 600ms", tiny);
+
+    const hours = try compactDuration(a, 3661.5);
+    defer arena.allocator().free(hours);
+    try std.testing.expectEqualStrings("61m 1s 500ms", hours);
+}
+
+test "formatDuration pads hours and milliseconds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const long = try formatDuration(a, 3661.25);
+    defer arena.allocator().free(long);
+    try std.testing.expectEqualStrings("1:01:01.250", long);
+
+    const minutes = try formatDuration(a, 82.5);
+    defer arena.allocator().free(minutes);
+    try std.testing.expectEqualStrings("1:22.500", minutes);
+
+    const seconds = try formatDuration(a, 12.345);
+    defer arena.allocator().free(seconds);
+    try std.testing.expectEqualStrings("12.345", seconds);
 }

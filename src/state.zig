@@ -54,6 +54,10 @@ pub const StateStore = struct {
     feeds: std.ArrayList(Feed) = .empty,
     outbox: std.ArrayList(OutboxRec) = .empty,
     next_id: i64 = 1,
+    /// Set whenever an in-memory change has not been written yet. A quiet poll
+    /// changes nothing, so the state file is left untouched instead of being
+    /// rewritten four times per cycle.
+    dirty: bool = false,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !StateStore {
         var self = StateStore{ .gpa = gpa, .io = io, .path = try gpa.dupe(u8, path) };
@@ -134,10 +138,11 @@ pub const StateStore = struct {
         const primed = feed.primed;
         const high_water: ?[]const u8 = feed.high_water;
         var inserted: usize = 0;
+        var changed = false;
 
         for (runs) |run| {
             if (run.run_url == null) {
-                try rememberIncomplete(self.gpa, feed, run.id, now);
+                if (try rememberIncomplete(self.gpa, feed, run.id, now)) changed = true;
                 continue;
             }
             const already_seen = feedHasSeen(feed, run.id);
@@ -153,10 +158,11 @@ pub const StateStore = struct {
                 } else {
                     try self.addOutbox(event_key, kind, run, now);
                     inserted += 1;
+                    changed = true;
                 }
             }
-            try rememberSeen(self.gpa, feed, run.id, now);
-            clearIncomplete(self.gpa, feed, run.id);
+            if (try rememberSeen(self.gpa, feed, run.id, now)) changed = true;
+            if (clearIncomplete(self.gpa, feed, run.id)) changed = true;
         }
 
         var page_high: ?[]const u8 = null;
@@ -170,9 +176,13 @@ pub const StateStore = struct {
         if (page_high) |ph| {
             if (next_high == null or std.mem.order(u8, ph, next_high.?) == .gt) next_high = ph;
         }
-        try self.setFeedHighWater(feed, next_high);
-        feed.primed = true;
-        self.trimSeen(feed);
+        if (try self.setFeedHighWater(feed, next_high)) changed = true;
+        if (!feed.primed) {
+            feed.primed = true;
+            changed = true;
+        }
+        if (self.trimSeen(feed)) changed = true;
+        if (changed) self.dirty = true;
         try self.persist();
         return inserted;
     }
@@ -190,7 +200,10 @@ pub const StateStore = struct {
     }
 
     pub fn markDelivered(self: *StateStore, id: i64) !void {
-        if (self.findOutbox(id)) |rec| rec.delivered_at = util.nowMs();
+        if (self.findOutbox(id)) |rec| {
+            rec.delivered_at = util.nowMs();
+            self.dirty = true;
+        }
         try self.persist();
     }
 
@@ -204,6 +217,7 @@ pub const StateStore = struct {
             rec.attempts = attempts;
             rec.next_attempt_at = now + delay;
             rec.failed_at = if (exhausted) now else null;
+            self.dirty = true;
         }
         try self.persist();
         return exhausted;
@@ -229,6 +243,7 @@ pub const StateStore = struct {
         const now = util.nowMs();
         const delivered_before = now - 30 * DAY_MS;
         const failed_before = now - 90 * DAY_MS;
+        var changed = false;
 
         var i: usize = 0;
         while (i < self.outbox.items.len) {
@@ -238,6 +253,7 @@ pub const StateStore = struct {
             if (drop) {
                 freeOutbox(self.gpa, rec);
                 _ = self.outbox.orderedRemove(i);
+                changed = true;
             } else i += 1;
         }
         for (self.feeds.items) |*feed| {
@@ -246,9 +262,11 @@ pub const StateStore = struct {
                 if (feed.incomplete.items[j].first_seen_at < failed_before) {
                     self.gpa.free(feed.incomplete.items[j].run_id);
                     _ = feed.incomplete.swapRemove(j);
+                    changed = true;
                 } else j += 1;
             }
         }
+        if (changed) self.dirty = true;
         try self.persist();
     }
 
@@ -296,28 +314,38 @@ pub const StateStore = struct {
         try self.outbox.append(self.gpa, rec);
     }
 
-    fn setFeedHighWater(self: *StateStore, feed: *Feed, next_high: ?[]const u8) !void {
+    fn setFeedHighWater(self: *StateStore, feed: *Feed, next_high: ?[]const u8) !bool {
         if (next_high) |nh| {
             if (feed.high_water) |cur| {
-                if (std.mem.eql(u8, cur, nh)) return;
+                if (std.mem.eql(u8, cur, nh)) return false;
             }
             const owned = try self.gpa.dupe(u8, nh);
             if (feed.high_water) |cur| self.gpa.free(cur);
             feed.high_water = owned;
+            return true;
         } else {
-            if (feed.high_water) |cur| self.gpa.free(cur);
-            feed.high_water = null;
+            if (feed.high_water) |cur| {
+                self.gpa.free(cur);
+                feed.high_water = null;
+                return true;
+            }
+            return false;
         }
     }
 
-    fn trimSeen(self: *StateStore, feed: *Feed) void {
+    fn trimSeen(self: *StateStore, feed: *Feed) bool {
+        var changed = false;
         while (feed.seen.items.len > SEEN_CAPACITY) {
             self.gpa.free(feed.seen.items[0].run_id);
             _ = feed.seen.orderedRemove(0);
+            changed = true;
         }
+        return changed;
     }
 
     fn persist(self: *StateStore) !void {
+        if (!self.dirty) return;
+
         var arena_inst = std.heap.ArenaAllocator.init(self.gpa);
         defer arena_inst.deinit();
         const a = arena_inst.allocator();
@@ -354,6 +382,7 @@ pub const StateStore = struct {
         const doc = types.StateFile{ .feeds = feeds, .outbox = outbox };
         const json = try std.json.Stringify.valueAlloc(a, doc, .{});
         try writeAtomic(self.io, self.path, json);
+        self.dirty = false;
     }
 };
 
@@ -378,26 +407,29 @@ fn feedHasIncomplete(feed: *Feed, run_id: []const u8) bool {
     return false;
 }
 
-fn rememberSeen(gpa: std.mem.Allocator, feed: *Feed, run_id: []const u8, now: i64) !void {
-    if (feedHasSeen(feed, run_id)) return;
+fn rememberSeen(gpa: std.mem.Allocator, feed: *Feed, run_id: []const u8, now: i64) !bool {
+    if (feedHasSeen(feed, run_id)) return false;
     try feed.seen.append(gpa, .{ .run_id = try gpa.dupe(u8, run_id), .seen_at = now });
+    return true;
 }
 
-fn rememberIncomplete(gpa: std.mem.Allocator, feed: *Feed, run_id: []const u8, now: i64) !void {
-    if (feedHasIncomplete(feed, run_id)) return;
+fn rememberIncomplete(gpa: std.mem.Allocator, feed: *Feed, run_id: []const u8, now: i64) !bool {
+    if (feedHasIncomplete(feed, run_id)) return false;
     try feed.incomplete.append(gpa, .{ .run_id = try gpa.dupe(u8, run_id), .first_seen_at = now });
+    return true;
 }
 
-fn clearIncomplete(gpa: std.mem.Allocator, feed: *Feed, run_id: []const u8) void {
+fn clearIncomplete(gpa: std.mem.Allocator, feed: *Feed, run_id: []const u8) bool {
     var i: usize = 0;
     while (i < feed.incomplete.items.len) {
         if (std.mem.eql(u8, feed.incomplete.items[i].run_id, run_id)) {
             gpa.free(feed.incomplete.items[i].run_id);
             _ = feed.incomplete.swapRemove(i);
-            return;
+            return true;
         }
         i += 1;
     }
+    return false;
 }
 
 fn watermark(kind: FeedKind, run: RunSummary) ?[]const u8 {

@@ -7,7 +7,12 @@ pub const Http = struct {
     client: std.http.Client,
 
     pub fn init(alloc: std.mem.Allocator, io: std.Io) Http {
-        return .{ .io = io, .client = .{ .allocator = alloc, .io = io } };
+        return .{
+            .io = io,
+            // 4 KiB is enough for every response header this worker sees; the
+            // default 8 KiB is doubled per pooled connection for no reason.
+            .client = .{ .allocator = alloc, .io = io, .read_buffer_size = 4096 },
+        };
     }
 
     pub fn deinit(self: *Http) void {
@@ -55,6 +60,9 @@ pub const Http = struct {
                 .content_type = .{ .override = "application/json" },
             },
             .redirect_behavior = .not_allowed,
+            // Discord posts are rare. Do not pin a TLS connection (and its
+            // buffers) for the whole lifetime of the worker just for them.
+            .keep_alive = false,
         });
         return @intFromEnum(res.status);
     }

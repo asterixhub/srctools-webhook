@@ -158,7 +158,7 @@ pub const Worker = struct {
         defer arena_inst.deinit();
         const a = arena_inst.allocator();
 
-        std.log.info("[Worker] Checking Speedrun.com...", .{});
+        std.log.debug("[Worker] Checking Speedrun.com...", .{});
         try self.drainOutbox(a);
         const scope = try self.currentScope(a);
         if (scope.game_ids.len == 0) {
@@ -170,7 +170,12 @@ pub const Worker = struct {
         var had_error = false;
         for (FEEDS) |kind| {
             if (!self.config.events.has(kind)) continue;
-            const page = self.speedrun.runs(a, kind.status(), scope.game_ids) catch |err| {
+            // One arena per feed: the previous feed's parsed JSON is released
+            // before the next one is fetched, so peak memory stays at one page.
+            var feed_arena = std.heap.ArenaAllocator.init(self.gpa);
+            defer feed_arena.deinit();
+            const fa = feed_arena.allocator();
+            const page = self.speedrun.runs(fa, kind.status(), scope.game_ids) catch |err| {
                 if (err == error.Aborted or self.shutdown.load(.acquire)) return error.Aborted;
                 had_error = true;
                 std.log.err("[Worker] Feed failed ({s}): {s}", .{ kind.status(), @errorName(err) });
@@ -180,7 +185,7 @@ pub const Worker = struct {
             found += try self.state.applyFeedPage(scope.account_id, feed_key, kind, page);
         }
 
-        std.log.info("[Worker] Found {d} new event(s)", .{found});
+        if (found > 0) std.log.info("[Worker] Found {d} new event(s)", .{found});
         try self.drainOutbox(a);
         try self.state.prune();
         if (had_error) return error.FeedFailed;
