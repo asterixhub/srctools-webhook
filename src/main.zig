@@ -5,6 +5,7 @@ const http = @import("http.zig");
 const speedrun = @import("speedrun.zig");
 const discord = @import("discord.zig");
 const state = @import("state.zig");
+const watchdog = @import("watchdog.zig");
 const worker = @import("worker.zig");
 
 pub const panic = std.debug.no_panic;
@@ -32,6 +33,7 @@ pub fn main() !void {
 
     var shutdown = std.atomic.Value(bool).init(false);
     installSignals(&shutdown);
+    watchdog.install();
 
     var client = http.Http.init(gpa, io);
     defer client.deinit();
@@ -41,8 +43,10 @@ pub fn main() !void {
 
     var dsc = discord.Discord.init(&client, config.discord_webhook_url, config.webhook_username, &shutdown);
 
+    watchdog.arm(watchdog.CHECK_TIMEOUT_SECONDS);
     var store = try state.StateStore.init(gpa, io, config.state_file);
     defer store.deinit();
+    watchdog.disarm();
 
     var w = worker.Worker.init(gpa, &config, &src, &dsc, &store, &shutdown);
     defer w.deinit();

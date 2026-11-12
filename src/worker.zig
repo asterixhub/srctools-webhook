@@ -4,6 +4,7 @@ const cfg = @import("config.zig");
 const speedrun = @import("speedrun.zig");
 const discord = @import("discord.zig");
 const state = @import("state.zig");
+const watchdog = @import("watchdog.zig");
 
 const FeedKind = cfg.FeedKind;
 
@@ -56,7 +57,10 @@ pub const Worker = struct {
         while (!self.shutdown.load(.acquire)) {
             const started = util.nowMs();
             if (self.shutdown.load(.acquire)) break;
-            if (self.check()) |_| {
+            watchdog.arm(watchdog.CHECK_TIMEOUT_SECONDS);
+            const checked = self.check();
+            watchdog.disarm();
+            if (checked) |_| {
                 self.consecutive_failures = 0;
             } else |err| {
                 if (err == error.Aborted or self.shutdown.load(.acquire)) break;

@@ -38,6 +38,7 @@ pub const Http = struct {
             .headers = .{ .user_agent = .{ .override = "s" } },
             .extra_headers = extra[0..n],
             .redirect_behavior = .not_allowed,
+            .keep_alive = false,
         });
         return @intFromEnum(res.status);
     }
