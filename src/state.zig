@@ -262,7 +262,6 @@ pub const StateStore = struct {
         try self.persist();
     }
 
-
     fn getFeed(self: *StateStore, feed_key: []const u8) ?*Feed {
         for (self.feeds.items) |*f| {
             if (std.mem.eql(u8, f.feed_key, feed_key)) return f;
@@ -337,7 +336,7 @@ pub const StateStore = struct {
     fn persist(self: *StateStore) !void {
         if (!self.dirty) return;
 
-        var arena_inst = std.heap.ArenaAllocator.init(self.gpa);
+        var arena_inst = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_inst.deinit();
         const a = arena_inst.allocator();
 

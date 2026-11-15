@@ -78,7 +78,9 @@ pub const Worker = struct {
     }
 
     fn check(self: *Worker) !void {
-        var arena_inst = std.heap.ArenaAllocator.init(self.gpa);
+        // Transient per-check data lives in page-backed arenas so the pages are
+        // returned to the OS after every check instead of staying in the GPA.
+        var arena_inst = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_inst.deinit();
         const a = arena_inst.allocator();
 
@@ -94,7 +96,7 @@ pub const Worker = struct {
         var had_error = false;
         for (FEEDS) |kind| {
             if (!self.config.events.has(kind)) continue;
-            var feed_arena = std.heap.ArenaAllocator.init(self.gpa);
+            var feed_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer feed_arena.deinit();
             const fa = feed_arena.allocator();
             const page = self.speedrun.runs(fa, kind.status(), scope.game_ids) catch |err| {

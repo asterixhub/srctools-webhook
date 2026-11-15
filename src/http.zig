@@ -2,6 +2,11 @@ const std = @import("std");
 
 pub const Allocating = std.Io.Writer.Allocating;
 
+// The worker performs one request at a time, so these scratch buffers are shared
+// between calls instead of being allocated and freed for every request.
+var redirect_buffer: [8 * 1024]u8 = undefined;
+var decompress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+
 pub const Http = struct {
     io: std.Io,
     client: std.http.Client,
@@ -38,6 +43,8 @@ pub const Http = struct {
             .headers = .{ .user_agent = .{ .override = "s" } },
             .extra_headers = extra[0..n],
             .redirect_behavior = .not_allowed,
+            .redirect_buffer = &redirect_buffer,
+            .decompress_buffer = &decompress_buffer,
             .keep_alive = false,
         });
         return @intFromEnum(res.status);
@@ -59,6 +66,8 @@ pub const Http = struct {
                 .content_type = .{ .override = "application/json" },
             },
             .redirect_behavior = .not_allowed,
+            .redirect_buffer = &redirect_buffer,
+            .decompress_buffer = &decompress_buffer,
             .keep_alive = false,
         });
         return @intFromEnum(res.status);

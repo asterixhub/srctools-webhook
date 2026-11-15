@@ -243,7 +243,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
     const discord_webhook_url = try discordWebhook(alloc, webhook_raw);
 
     const interval_raw = getEnv(&env, "CHECK_INTERVAL_SECONDS");
-    const interval_s = try integer(interval_raw, 25, 1, 3600);
+    const interval_s = try integer(interval_raw, 60, 1, 3600);
 
     const volume = getEnv(&env, "RAILWAY_VOLUME_MOUNT_PATH");
     const data_dir = blk: {

@@ -1,4 +1,4 @@
-# Build artifacts and local state — never sent to the Docker build context.
+# Build artifacts and local state; never sent to the Docker build context.
 zig-out/
 .zig-cache/
 data/
