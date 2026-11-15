@@ -2,11 +2,6 @@ const std = @import("std");
 
 pub const Allocating = std.Io.Writer.Allocating;
 
-// The worker performs one request at a time, so these scratch buffers are shared
-// between calls instead of being allocated and freed for every request.
-var redirect_buffer: [8 * 1024]u8 = undefined;
-var decompress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-
 pub const Http = struct {
     io: std.Io,
     client: std.http.Client,
@@ -28,6 +23,11 @@ pub const Http = struct {
         api_key: ?[]const u8,
         out: *Allocating,
     ) !u16 {
+        const decompress_buffer = try std.heap.page_allocator.alloc(u8, std.compress.flate.max_window_len);
+        defer std.heap.page_allocator.free(decompress_buffer);
+        const redirect_buffer = try std.heap.page_allocator.alloc(u8, 8 * 1024);
+        defer std.heap.page_allocator.free(redirect_buffer);
+
         var extra: [2]std.http.Header = undefined;
         var n: usize = 0;
         extra[n] = .{ .name = "Accept", .value = "application/json" };
@@ -43,8 +43,8 @@ pub const Http = struct {
             .headers = .{ .user_agent = .{ .override = "s" } },
             .extra_headers = extra[0..n],
             .redirect_behavior = .not_allowed,
-            .redirect_buffer = &redirect_buffer,
-            .decompress_buffer = &decompress_buffer,
+            .redirect_buffer = redirect_buffer,
+            .decompress_buffer = decompress_buffer,
             .keep_alive = false,
         });
         return @intFromEnum(res.status);
@@ -56,6 +56,11 @@ pub const Http = struct {
         body: []const u8,
         out: *Allocating,
     ) !u16 {
+        const decompress_buffer = try std.heap.page_allocator.alloc(u8, std.compress.flate.max_window_len);
+        defer std.heap.page_allocator.free(decompress_buffer);
+        const redirect_buffer = try std.heap.page_allocator.alloc(u8, 8 * 1024);
+        defer std.heap.page_allocator.free(redirect_buffer);
+
         const res = try self.client.fetch(.{
             .location = .{ .url = url },
             .method = .POST,
@@ -66,8 +71,8 @@ pub const Http = struct {
                 .content_type = .{ .override = "application/json" },
             },
             .redirect_behavior = .not_allowed,
-            .redirect_buffer = &redirect_buffer,
-            .decompress_buffer = &decompress_buffer,
+            .redirect_buffer = redirect_buffer,
+            .decompress_buffer = decompress_buffer,
             .keep_alive = false,
         });
         return @intFromEnum(res.status);

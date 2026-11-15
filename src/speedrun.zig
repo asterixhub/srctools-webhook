@@ -17,7 +17,12 @@ pub const Game = struct { id: []const u8, name: []const u8 };
 
 pub const Error = error{ SpeedrunRequestFailed, MalformedResponse } || util.Aborted || std.mem.Allocator.Error;
 
-const CacheEntry = struct { expires_at: i64, body: []u8 };
+const Subcategory = struct {
+    var_id: []u8,
+    values: std.StringHashMap([]u8),
+};
+
+const CacheEntry = struct { expires_at: i64, subs: []Subcategory };
 
 pub const Client = struct {
     http: *http.Http,
@@ -48,7 +53,7 @@ pub const Client = struct {
         var it = self.var_cache.iterator();
         while (it.next()) |entry| {
             self.gpa.free(entry.key_ptr.*);
-            self.gpa.free(entry.value_ptr.*.body);
+            freeSubs(self.gpa, entry.value_ptr.*.subs);
         }
         self.var_cache.deinit();
     }
@@ -147,23 +152,30 @@ pub const Client = struct {
         return games.toOwnedSlice(arena);
     }
 
-    fn variables(self: *Client, arena: std.mem.Allocator, game_id: []const u8) Error![]Value {
+    fn variables(self: *Client, arena: std.mem.Allocator, game_id: []const u8) Error![]Subcategory {
         const now = util.nowMs();
         if (self.var_cache.get(game_id)) |entry| {
-            if (entry.expires_at > now) return dataArray(try parse(arena, entry.body));
+            if (entry.expires_at > now) return entry.subs;
         }
         const url = try std.fmt.allocPrint(arena, "{s}/games/{s}/variables", .{ API_BASE, game_id });
         const body = try self.request(arena, url);
-        const owned_body = try self.gpa.dupe(u8, body);
-        errdefer self.gpa.free(owned_body);
-        const gop = try self.var_cache.getOrPut(game_id);
+        const root = try parse(arena, body);
+        const subs = try parseSubcategories(self.gpa, root);
+        errdefer freeSubs(self.gpa, subs);
+
+        const key_copy = try self.gpa.dupe(u8, game_id);
+        const gop = self.var_cache.getOrPut(game_id) catch |e| {
+            self.gpa.free(key_copy);
+            return e;
+        };
         if (gop.found_existing) {
-            self.gpa.free(gop.value_ptr.*.body);
+            self.gpa.free(key_copy);
+            freeSubs(self.gpa, gop.value_ptr.*.subs);
         } else {
-            gop.key_ptr.* = try self.gpa.dupe(u8, game_id);
+            gop.key_ptr.* = key_copy;
         }
-        gop.value_ptr.* = .{ .expires_at = now + VARIABLES_CACHE_MS, .body = owned_body };
-        return dataArray(try parse(arena, body));
+        gop.value_ptr.* = .{ .expires_at = now + VARIABLES_CACHE_MS, .subs = subs };
+        return subs;
     }
 
     fn dataArray(root: Value) []Value {
@@ -171,6 +183,73 @@ pub const Client = struct {
         const data = root.object.get("data") orelse return &.{};
         if (data != .array) return &.{};
         return data.array.items;
+    }
+
+    fn parseSubcategories(gpa: std.mem.Allocator, root: Value) ![]Subcategory {
+        var list: std.ArrayList(Subcategory) = .empty;
+        errdefer {
+            for (list.items) |*sub| freeSub(gpa, sub);
+            list.deinit(gpa);
+        }
+
+        var tmp = std.heap.ArenaAllocator.init(gpa);
+        defer tmp.deinit();
+        const ta = tmp.allocator();
+
+        for (dataArray(root)) |var_val| {
+            if (var_val != .object) continue;
+            const variable = var_val.object;
+            const is_sub = variable.get("is-subcategory") orelse continue;
+            if (is_sub != .bool or !is_sub.bool) continue;
+            const var_id = util.asString(variable.get("id")) orelse continue;
+            const values1 = variable.get("values") orelse continue;
+            if (values1 != .object) continue;
+            const values2 = values1.object.get("values") orelse continue;
+            if (values2 != .object) continue;
+
+            try list.ensureUnusedCapacity(gpa, 1);
+            var map = std.StringHashMap([]u8).init(gpa);
+            errdefer freeMap(gpa, &map);
+
+            var it = values2.object.iterator();
+            while (it.next()) |entry| {
+                const entry_val = entry.value_ptr.*;
+                if (entry_val != .object) continue;
+                const label_raw = util.asString(entry_val.object.get("label")) orelse continue;
+                const label = (try util.cleanOptionalLine(ta, label_raw, 256)) orelse continue;
+                const key = try gpa.dupe(u8, entry.key_ptr.*);
+                errdefer gpa.free(key);
+                try map.put(key, try gpa.dupe(u8, label));
+            }
+            if (map.count() == 0) {
+                map.deinit();
+                continue;
+            }
+            list.appendAssumeCapacity(.{
+                .var_id = try gpa.dupe(u8, var_id),
+                .values = map,
+            });
+        }
+        return list.toOwnedSlice(gpa);
+    }
+
+    fn freeMap(gpa: std.mem.Allocator, map: *std.StringHashMap([]u8)) void {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            gpa.free(entry.key_ptr.*);
+            gpa.free(entry.value_ptr.*);
+        }
+        map.deinit();
+    }
+
+    fn freeSub(gpa: std.mem.Allocator, sub: *Subcategory) void {
+        gpa.free(sub.var_id);
+        freeMap(gpa, &sub.values);
+    }
+
+    fn freeSubs(gpa: std.mem.Allocator, subs: []Subcategory) void {
+        for (subs) |*sub| freeSub(gpa, sub);
+        gpa.free(subs);
     }
 
     fn runsForGame(
@@ -194,7 +273,7 @@ pub const Client = struct {
             if (std.mem.eql(u8, gid, game_id)) try scoped.append(arena, item);
         }
 
-        var variables_for_game: []Value = &.{};
+        var variables_for_game: []Subcategory = &.{};
         for (scoped.items) |item| {
             if (runHasValues(item.object)) {
                 variables_for_game = try self.variables(arena, game_id);
@@ -244,7 +323,7 @@ fn runHasValues(run: std.json.ObjectMap) bool {
     return values == .object and values.object.count() > 0;
 }
 
-pub fn normalizeRun(arena: std.mem.Allocator, run_val: Value, variables: []Value) !RunSummary {
+fn normalizeRun(arena: std.mem.Allocator, run_val: Value, variables: []const Subcategory) !RunSummary {
     if (run_val != .object) return error.MalformedResponse;
     const run = run_val.object;
 
@@ -312,7 +391,7 @@ fn dupeOptional(arena: std.mem.Allocator, v: ?[]const u8) ?[]const u8 {
     return arena.dupe(u8, s) catch null;
 }
 
-fn subcategoryLabels(arena: std.mem.Allocator, selected_val: ?Value, variables: []Value) ![]const []const u8 {
+fn subcategoryLabels(arena: std.mem.Allocator, selected_val: ?Value, variables: []const Subcategory) ![]const []const u8 {
     var labels: std.ArrayList([]const u8) = .empty;
     const selected = util.embeddedObject(selected_val) orelse {
         if (selected_val) |sv| {
@@ -323,25 +402,13 @@ fn subcategoryLabels(arena: std.mem.Allocator, selected_val: ?Value, variables: 
     return labelsFrom(arena, selected, variables);
 }
 
-fn labelsFrom(arena: std.mem.Allocator, selected: util.Object, variables: []Value) ![]const []const u8 {
+fn labelsFrom(arena: std.mem.Allocator, selected: util.Object, subs: []const Subcategory) ![]const []const u8 {
     var labels: std.ArrayList([]const u8) = .empty;
-    for (variables) |variable_val| {
-        if (variable_val != .object) continue;
-        const variable = variable_val.object;
-        const is_sub = variable.get("is-subcategory") orelse continue;
-        if (is_sub != .bool or !is_sub.bool) continue;
-        const var_id = util.asString(variable.get("id")) orelse continue;
-        const value_id_val = selected.get(var_id) orelse continue;
+    for (subs) |sub| {
+        const value_id_val = selected.get(sub.var_id) orelse continue;
         const value_id = util.asString(value_id_val) orelse continue;
-
-        const values1 = variable.get("values") orelse continue;
-        if (values1 != .object) continue;
-        const values2 = values1.object.get("values") orelse continue;
-        if (values2 != .object) continue;
-        const entry = values2.object.get(value_id) orelse continue;
-        if (entry != .object) continue;
-        const label = try util.cleanOptionalLine(arena, util.asString(entry.object.get("label")), 256);
-        if (label) |l| try labels.append(arena, l);
+        const label = sub.values.get(value_id) orelse continue;
+        try labels.append(arena, try arena.dupe(u8, label));
     }
     return labels.toOwnedSlice(arena);
 }
@@ -385,4 +452,27 @@ fn joinParts(arena: std.mem.Allocator, base: ?[]const u8, subcats: []const []con
     for (subcats) |s| try parts.append(arena, s);
     if (parts.items.len == 0) return null;
     return try std.mem.join(arena, sep, parts.items);
+}
+
+test "subcategory cache keeps only subcategory labels" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const variables_json =
+        \\{"data":[
+        \\{"id":"var1","is-subcategory":true,"values":{"values":{"v1":{"label":"Glitchless"},"v2":{"label":"No Major Glitches"}}}},
+        \\{"id":"var2","is-subcategory":false,"values":{"values":{"x":{"label":"Ignored"}}}}
+        \\]}
+    ;
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, a, variables_json, .{});
+    const subs = try Client.parseSubcategories(a, root);
+
+    const selected_json =
+        \\{"var1":"v2","var2":"x"}
+    ;
+    const selected_root = try std.json.parseFromSliceLeaky(std.json.Value, a, selected_json, .{});
+    const labels = try labelsFrom(a, selected_root.object, subs);
+    try std.testing.expectEqual(@as(usize, 1), labels.len);
+    try std.testing.expectEqualStrings("No Major Glitches", labels[0]);
 }

@@ -38,6 +38,7 @@ const OutboxRec = struct {
     kind: FeedKind,
     run_id: []u8,
     run: RunSummary,
+    run_freed: bool = false,
     attempts: u32 = 0,
     next_attempt_at: i64 = 0,
     delivered_at: ?i64 = null,
@@ -101,12 +102,14 @@ pub const StateStore = struct {
             try self.feeds.append(self.gpa, feed);
         }
         for (parsed.value.outbox) |ob| {
+            const finished = ob.delivered_at != null or ob.failed_at != null;
             try self.outbox.append(self.gpa, .{
                 .id = self.next_id,
                 .event_key = try self.gpa.dupe(u8, ob.event_key),
                 .kind = ob.kind,
                 .run_id = try self.gpa.dupe(u8, ob.run_id),
-                .run = try dupeRun(self.gpa, ob.run),
+                .run = if (finished) .{ .id = "", .runner = "" } else try dupeRun(self.gpa, ob.run),
+                .run_freed = finished,
                 .attempts = ob.attempts,
                 .next_attempt_at = ob.next_attempt_at,
                 .delivered_at = ob.delivered_at,
@@ -194,6 +197,7 @@ pub const StateStore = struct {
     pub fn markDelivered(self: *StateStore, id: i64) !void {
         if (self.findOutbox(id)) |rec| {
             rec.delivered_at = util.nowMs();
+            self.releaseRun(rec);
             self.dirty = true;
         }
         try self.persist();
@@ -209,26 +213,11 @@ pub const StateStore = struct {
             rec.attempts = attempts;
             rec.next_attempt_at = now + delay;
             rec.failed_at = if (exhausted) now else null;
+            if (exhausted) self.releaseRun(rec);
             self.dirty = true;
         }
         try self.persist();
         return exhausted;
-    }
-
-    pub fn pendingCount(self: *StateStore) usize {
-        var n: usize = 0;
-        for (self.outbox.items) |rec| {
-            if (rec.delivered_at == null and rec.failed_at == null) n += 1;
-        }
-        return n;
-    }
-
-    pub fn failedCount(self: *StateStore) usize {
-        var n: usize = 0;
-        for (self.outbox.items) |rec| {
-            if (rec.failed_at != null) n += 1;
-        }
-        return n;
     }
 
     pub fn prune(self: *StateStore) !void {
@@ -287,6 +276,13 @@ pub const StateStore = struct {
             if (rec.id == id) return rec;
         }
         return null;
+    }
+
+    fn releaseRun(self: *StateStore, rec: *OutboxRec) void {
+        if (rec.run_freed) return;
+        freeRun(self.gpa, rec.run);
+        rec.run = .{ .id = "", .runner = "" };
+        rec.run_freed = true;
     }
 
     fn addOutbox(self: *StateStore, event_key: []u8, kind: FeedKind, run: RunSummary, now: i64) !void {
@@ -481,5 +477,5 @@ fn freeFeed(gpa: std.mem.Allocator, feed: *Feed) void {
 fn freeOutbox(gpa: std.mem.Allocator, rec: *OutboxRec) void {
     gpa.free(rec.event_key);
     gpa.free(rec.run_id);
-    freeRun(gpa, rec.run);
+    if (!rec.run_freed) freeRun(gpa, rec.run);
 }

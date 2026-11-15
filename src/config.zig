@@ -59,8 +59,16 @@ pub const Config = struct {
     check_interval_ms: u64,
     events: Events,
     game_ids: []const []const u8,
+    new_only_game_ids: []const []const u8,
     state_file: []const u8,
     webhook_username: ?[]const u8,
+
+    pub fn isNewOnly(self: Config, game_id: []const u8) bool {
+        for (self.new_only_game_ids) |id| {
+            if (std.mem.eql(u8, id, game_id)) return true;
+        }
+        return false;
+    }
 };
 
 pub const ConfigError = error{
@@ -227,10 +235,45 @@ fn parseGameIds(alloc: std.mem.Allocator, raw: ?[]const u8) ![]const []const u8 
             );
             return ConfigError.DisallowedGame;
         }
+        var duplicate = false;
+        for (list.items) |existing| {
+            if (std.mem.eql(u8, existing, v)) duplicate = true;
+        }
+        if (duplicate) continue;
         try list.append(alloc, try alloc.dupe(u8, v));
     }
     if (list.items.len == 0) {
         for (ALLOWED_GAMES) |g| try list.append(alloc, try alloc.dupe(u8, g.id));
+    }
+    return list.toOwnedSlice(alloc);
+}
+
+fn parseNewOnlyGameIds(alloc: std.mem.Allocator, raw: ?[]const u8) ![]const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer list.deinit(alloc);
+
+    const s = raw orelse "";
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |token| {
+        const v = std.mem.trim(u8, token, " \t\r\n");
+        if (v.len == 0) continue;
+        var allowed = false;
+        for (ALLOWED_GAMES) |g| {
+            if (std.mem.eql(u8, v, g.id)) allowed = true;
+        }
+        if (!allowed) {
+            std.log.err(
+                "NEW_ONLY_GAME_IDS may only contain Run pro (o1yj25r1) and Bhop pro (268q8o6p). Received '{s}'.",
+                .{v},
+            );
+            return ConfigError.DisallowedGame;
+        }
+        var duplicate = false;
+        for (list.items) |existing| {
+            if (std.mem.eql(u8, existing, v)) duplicate = true;
+        }
+        if (duplicate) continue;
+        try list.append(alloc, try alloc.dupe(u8, v));
     }
     return list.toOwnedSlice(alloc);
 }
@@ -243,7 +286,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
     const discord_webhook_url = try discordWebhook(alloc, webhook_raw);
 
     const interval_raw = getEnv(&env, "CHECK_INTERVAL_SECONDS");
-    const interval_s = try integer(interval_raw, 60, 1, 3600);
+    const interval_s = try integer(interval_raw, 70, 1, 3600);
 
     const volume = getEnv(&env, "RAILWAY_VOLUME_MOUNT_PATH");
     const data_dir = blk: {
@@ -261,6 +304,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
         .check_interval_ms = @as(u64, @intCast(interval_s)) * 1000,
         .events = try parseEvents(getEnv(&env, "MONITORED_EVENTS")),
         .game_ids = try parseGameIds(alloc, getEnv(&env, "MONITORED_GAME_IDS")),
+        .new_only_game_ids = try parseNewOnlyGameIds(alloc, getEnv(&env, "NEW_ONLY_GAME_IDS")),
         .state_file = state_file,
         .webhook_username = try optionalName(alloc, getEnv(&env, "WEBHOOK_USERNAME")),
     };
@@ -271,4 +315,14 @@ pub fn gameName(id: []const u8) []const u8 {
         if (std.mem.eql(u8, id, g.id)) return g.name;
     }
     return id;
+}
+
+test "new-only game ids parse, trim, and deduplicate" {
+    const list = try parseNewOnlyGameIds(std.testing.allocator, " o1yj25r1 , o1yj25r1 ");
+    defer {
+        for (list) |id| std.testing.allocator.free(id);
+        std.testing.allocator.free(list);
+    }
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    try std.testing.expectEqualStrings("o1yj25r1", list[0]);
 }

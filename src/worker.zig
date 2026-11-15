@@ -96,10 +96,19 @@ pub const Worker = struct {
         var had_error = false;
         for (FEEDS) |kind| {
             if (!self.config.events.has(kind)) continue;
+            var games: [cfg.ALLOWED_GAMES.len][]const u8 = undefined;
+            var game_count: usize = 0;
+            for (self.config.game_ids) |game_id| {
+                if (kind != .new_run and self.config.isNewOnly(game_id)) continue;
+                games[game_count] = game_id;
+                game_count += 1;
+            }
+            if (game_count == 0) continue;
+
             var feed_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer feed_arena.deinit();
             const fa = feed_arena.allocator();
-            const page = self.speedrun.runs(fa, kind.status(), scope.game_ids) catch |err| {
+            const page = self.speedrun.runs(fa, kind.status(), games[0..game_count]) catch |err| {
                 if (err == error.Aborted or self.shutdown.load(.acquire)) return error.Aborted;
                 had_error = true;
                 std.log.err("[Worker] Feed failed ({s}): {s}", .{ kind.status(), @errorName(err) });

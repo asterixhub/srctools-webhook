@@ -33,11 +33,6 @@ pub fn embeddedObject(v: ?Value) ?Object {
     return val.object;
 }
 
-pub fn get(obj: ?Object, key: []const u8) ?Value {
-    const o = obj orelse return null;
-    return o.get(key);
-}
-
 pub fn asString(v: ?Value) ?[]const u8 {
     const val = v orelse return null;
     return switch (val) {
@@ -66,7 +61,8 @@ pub fn resourceId(alloc: std.mem.Allocator, v: ?Value) !?[]const u8 {
 }
 
 pub fn objString(alloc: std.mem.Allocator, obj: ?Object, key: []const u8) !?[]const u8 {
-    return cleanOptionalLine(alloc, asString(get(obj, key)), 256);
+    const o = obj orelse return null;
+    return cleanOptionalLine(alloc, asString(o.get(key)), 256);
 }
 
 pub fn nestedString(
