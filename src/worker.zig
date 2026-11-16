@@ -63,14 +63,19 @@ pub const Worker = struct {
             const result = self.check();
             const checked = memlog.sample(self.speedrun.http.io);
             watchdog.disarm();
-            self.speedrun.http.releaseTlsCache();
             const after = memlog.sample(self.speedrun.http.io);
-            std.log.info("[Mem] rss {d}->{d}->{d} KB, threads {d}, heap {d} KB", .{
+            std.log.info("[Mem] rss {d}/{d}/{d} KB (anon {d}, file {d}, shmem {d}), vsz {d} KB, threads {d}, heap {d}/{d}/{d} KB", .{
                 before.rss_kb,
                 checked.rss_kb,
                 after.rss_kb,
+                after.anon_kb,
+                after.file_kb,
+                after.shmem_kb,
+                after.vsz_kb,
                 after.threads,
-                memlog.heap_requested.* / 1024,
+                before.heap_kb,
+                checked.heap_kb,
+                after.heap_kb,
             });
             if (result) |_| {
                 self.consecutive_failures = 0;
