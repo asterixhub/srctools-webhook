@@ -7,6 +7,7 @@ const discord = @import("discord.zig");
 const state = @import("state.zig");
 const watchdog = @import("watchdog.zig");
 const worker = @import("worker.zig");
+const memlog = @import("memlog.zig");
 
 pub const panic = std.debug.no_panic;
 
@@ -16,11 +17,13 @@ pub fn main() !void {
     var gpa_state = std.heap.DebugAllocator(.{
         .thread_safe = false,
         .safety = builtin.mode == .Debug,
+        .enable_memory_limit = true,
     }){};
     defer if (builtin.mode == .Debug) {
         _ = gpa_state.deinit();
     };
     const gpa = gpa_state.allocator();
+    memlog.heap_requested = &gpa_state.total_requested_bytes;
 
     var threaded: std.Io.Threaded = .init(gpa, .{});
     defer threaded.deinit();

@@ -5,6 +5,7 @@ const speedrun = @import("speedrun.zig");
 const discord = @import("discord.zig");
 const state = @import("state.zig");
 const watchdog = @import("watchdog.zig");
+const memlog = @import("memlog.zig");
 
 const FeedKind = cfg.FeedKind;
 
@@ -58,9 +59,19 @@ pub const Worker = struct {
             const started = util.nowMs();
             if (self.shutdown.load(.acquire)) break;
             watchdog.arm(watchdog.CHECK_TIMEOUT_SECONDS);
+            const before = memlog.sample(self.speedrun.http.io);
             const result = self.check();
+            const checked = memlog.sample(self.speedrun.http.io);
             watchdog.disarm();
             self.speedrun.http.releaseTlsCache();
+            const after = memlog.sample(self.speedrun.http.io);
+            std.log.info("[Mem] rss {d}->{d}->{d} KB, threads {d}, heap {d} KB", .{
+                before.rss_kb,
+                checked.rss_kb,
+                after.rss_kb,
+                after.threads,
+                memlog.heap_requested.* / 1024,
+            });
             if (result) |_| {
                 self.consecutive_failures = 0;
             } else |err| {
