@@ -21,7 +21,7 @@ pub fn sample(io: std.Io) Sample {
     defer file.close(io);
 
     var read_buf: [1024]u8 = undefined;
-    var reader = file.reader(io, &read_buf);
+    var reader = file.readerStreaming(io, &read_buf);
     const data = reader.interface.allocRemaining(std.heap.page_allocator, .limited(8192)) catch return out;
     defer std.heap.page_allocator.free(data);
 
