@@ -49,6 +49,9 @@ pub const Http = struct {
     }
 
     fn fetch(self: *Http, options: std.http.Client.FetchOptions) !std.http.Client.FetchResult {
+        // std passes this timestamp to TLS as "now" for certificate validity.
+        // A non-null value also tells the client the bundle is already loaded.
+        if (self.client.now != null) self.client.now = std.Io.Clock.real.now(self.io);
         return self.client.fetch(options) catch |err| switch (err) {
             error.TlsInitializationFailed => {
                 if (!self.mini_ca) return err;
