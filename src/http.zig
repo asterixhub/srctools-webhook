@@ -2,14 +2,61 @@ const std = @import("std");
 
 pub const Allocating = std.Io.Writer.Allocating;
 
+/// Only the roots that the monitored hosts actually chain to. The full Debian
+/// bundle is ~140 KB; this one is a few KB and covers speedrun.com and
+/// Discord. A host served by anything else falls back to the system bundle.
+const MINI_CA_PATH = "/etc/ssl/certs/ca-mini.pem";
+
 pub const Http = struct {
     io: std.Io,
     client: std.http.Client,
+    mini_ca: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, io: std.Io) Http {
-        return .{
+        var self: Http = .{
             .io = io,
             .client = .{ .allocator = alloc, .io = io, .read_buffer_size = 4096 },
+        };
+        self.loadMiniCa();
+        return self;
+    }
+
+    fn loadMiniCa(self: *Http) void {
+        const now = std.Io.Clock.real.now(self.io);
+        var bundle: std.crypto.Certificate.Bundle = .empty;
+        bundle.addCertsFromFilePathAbsolute(self.client.allocator, self.io, now, MINI_CA_PATH) catch {
+            bundle.deinit(self.client.allocator);
+            return;
+        };
+        const roots = bundle.map.count();
+        if (roots == 0) {
+            bundle.deinit(self.client.allocator);
+            return;
+        }
+        self.client.ca_bundle = bundle;
+        self.client.now = now;
+        self.mini_ca = true;
+        std.log.info("[TLS] Loaded {d} bundled root certificate(s)", .{roots});
+    }
+
+    /// Undo the mini bundle and let std.http.Client rescan the full system
+    /// store on the next handshake.
+    fn dropMiniCa(self: *Http) void {
+        self.client.ca_bundle.deinit(self.client.allocator);
+        self.client.ca_bundle = .empty;
+        self.client.now = null;
+        self.mini_ca = false;
+    }
+
+    fn fetch(self: *Http, options: std.http.Client.FetchOptions) !std.http.Client.FetchResult {
+        return self.client.fetch(options) catch |err| switch (err) {
+            error.TlsInitializationFailed => {
+                if (!self.mini_ca) return err;
+                std.log.warn("[TLS] Bundled roots did not verify the peer; using the system bundle", .{});
+                self.dropMiniCa();
+                return self.client.fetch(options);
+            },
+            else => |e| return e,
         };
     }
 
@@ -36,7 +83,7 @@ pub const Http = struct {
             extra[n] = .{ .name = "X-API-Key", .value = key };
             n += 1;
         }
-        const res = try self.client.fetch(.{
+        const res = try self.fetch(.{
             .location = .{ .url = url },
             .method = .GET,
             .response_writer = &out.writer,
@@ -61,7 +108,7 @@ pub const Http = struct {
         const redirect_buffer = try std.heap.page_allocator.alloc(u8, 8 * 1024);
         defer std.heap.page_allocator.free(redirect_buffer);
 
-        const res = try self.client.fetch(.{
+        const res = try self.fetch(.{
             .location = .{ .url = url },
             .method = .POST,
             .payload = body,

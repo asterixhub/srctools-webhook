@@ -22,7 +22,9 @@ RUN zig build -Dtarget=x86_64-linux-musl --release=small \
     && cp zig-out/bin/s /s
 
 FROM scratch
-# TLS CA store for std.http.Client; scratch has none.
+# TLS CA store for std.http.Client; scratch has none. The worker loads the
+# small bundle first and only rescans the full Debian store as a fallback.
+COPY src/ca-mini.pem /etc/ssl/certs/ca-mini.pem
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /s /s
 ENV RAILWAY_VOLUME_MOUNT_PATH=/data
