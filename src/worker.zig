@@ -58,9 +58,10 @@ pub const Worker = struct {
             const started = util.nowMs();
             if (self.shutdown.load(.acquire)) break;
             watchdog.arm(watchdog.CHECK_TIMEOUT_SECONDS);
-            const checked = self.check();
+            const result = self.check();
             watchdog.disarm();
-            if (checked) |_| {
+            self.speedrun.http.releaseTlsCache();
+            if (result) |_| {
                 self.consecutive_failures = 0;
             } else |err| {
                 if (err == error.Aborted or self.shutdown.load(.acquire)) break;

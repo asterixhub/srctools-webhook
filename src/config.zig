@@ -187,7 +187,7 @@ fn optionalName(alloc: std.mem.Allocator, raw: ?[]const u8) !?[]u8 {
 
 fn parseEvents(raw: ?[]const u8) !Events {
     const s = raw orelse "new,verified,rejected";
-    const source = if (std.mem.trim(u8, s, " \t\r\n").len == 0) "new,verified,rejected" else s;
+    const source = if (std.mem.trim(u8, s, " \t\r\n").len == 0) "new,verified" else s;
     var events: Events = .{};
     var it = std.mem.splitScalar(u8, source, ',');
     while (it.next()) |token| {
@@ -286,7 +286,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
     const discord_webhook_url = try discordWebhook(alloc, webhook_raw);
 
     const interval_raw = getEnv(&env, "CHECK_INTERVAL_SECONDS");
-    const interval_s = try integer(interval_raw, 70, 1, 3600);
+    const interval_s = try integer(interval_raw, 300, 1, 3600);
 
     const volume = getEnv(&env, "RAILWAY_VOLUME_MOUNT_PATH");
     const data_dir = blk: {

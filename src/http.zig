@@ -17,6 +17,15 @@ pub const Http = struct {
         self.client.deinit();
     }
 
+    /// The system CA bundle is ~140 KB and is only needed while a TLS
+    /// handshake is in progress. Drop it between checks so the pages go
+    /// back to the OS; the next HTTPS request loads it again.
+    pub fn releaseTlsCache(self: *Http) void {
+        self.client.ca_bundle.deinit(self.client.allocator);
+        self.client.ca_bundle = .empty;
+        self.client.now = null;
+    }
+
     pub fn getJson(
         self: *Http,
         url: []const u8,
